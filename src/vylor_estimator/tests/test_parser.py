@@ -2,23 +2,27 @@
 from __future__ import annotations
 
 from pathlib import Path
-
 import pytest
 
-from vylor_estimator.parser import parse_files
+from vylor_estimator.parser import ClaudeJsonlParser
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_parse_sample_session():
+@pytest.fixture
+def parser() -> ClaudeJsonlParser:
+    return ClaudeJsonlParser()
+
+
+def test_parse_sample_session(parser: ClaudeJsonlParser):
     files = [FIXTURES / "sample_session.jsonl"]
-    turns = parse_files(files)
+    turns = parser.parse(files)
     assert len(turns) == 4, f"Expected 4 turns, got {len(turns)}"
 
 
-def test_turn_fields():
+def test_turn_fields(parser: ClaudeJsonlParser):
     files = [FIXTURES / "sample_session.jsonl"]
-    turns = parse_files(files)
+    turns = parser.parse(files)
     for t in turns:
         assert t.turn_id
         assert t.model == "claude-sonnet-4.5"
@@ -27,9 +31,9 @@ def test_turn_fields():
         assert t.cost >= 0.0
 
 
-def test_tool_calls_extracted():
+def test_tool_calls_extracted(parser: ClaudeJsonlParser):
     files = [FIXTURES / "sample_session.jsonl"]
-    turns = parse_files(files)
+    turns = parser.parse(files)
     # First turn has list_dir
     list_dir_turns = [t for t in turns if any(tc.name == "list_dir" for tc in t.tool_calls)]
     assert len(list_dir_turns) >= 1
@@ -39,14 +43,14 @@ def test_tool_calls_extracted():
     assert len(grep_turns) >= 1
 
 
-def test_no_negative_costs():
+def test_no_negative_costs(parser: ClaudeJsonlParser):
     files = [FIXTURES / "sample_session.jsonl"]
-    turns = parse_files(files)
+    turns = parser.parse(files)
     for t in turns:
         assert t.cost >= 0.0, f"Negative cost: {t.cost} for turn {t.turn_id}"
 
 
-def test_subagent_stitching(tmp_path):
+def test_subagent_stitching(tmp_path, parser: ClaudeJsonlParser):
     """Verify that a subagent file under <parent_sess>/subagents/<agent>.jsonl is stitched."""
     import json
 
@@ -86,7 +90,7 @@ def test_subagent_stitching(tmp_path):
     }
     sub_file.write_text(json.dumps(sub_msg) + "\n", encoding="utf-8")
 
-    turns = parse_files([parent_file, sub_file])
+    turns = parser.parse([parent_file, sub_file])
     assert len(turns) == 2
 
     # Both turns must share the parent session_id

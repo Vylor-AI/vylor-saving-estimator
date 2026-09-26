@@ -1,20 +1,15 @@
-"""discovery.py -- Auto-discover Claude session JSONL files by OS platform."""
 from __future__ import annotations
 
 import os
 import platform
-import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 
 class ISessionDiscoverer(ABC):
-    """Abstract interface for session discovery."""
-
     @abstractmethod
     def discover(self) -> list[Path]:
         """Return a deduplicated, sorted list of .jsonl session files."""
-        pass
 
 
 class ClaudeSessionDiscoverer(ISessionDiscoverer):
@@ -113,18 +108,3 @@ class ClaudeSessionDiscoverer(ISessionDiscoverer):
                 "Pass an explicit path: vylor-estimate /path/to/sessions/"
             )
         return files
-
-
-def _default_claude_path() -> Path | None:
-    """Backward-compatible helper."""
-    return ClaudeSessionDiscoverer().resolve_default_path()
-
-
-def _walk_for_jsonl(directory: Path) -> list[Path]:
-    """Backward-compatible helper."""
-    return ClaudeSessionDiscoverer().walk_jsonl(directory)
-
-
-def discover_sessions(path: str | Path | None = None) -> list[Path]:
-    """Backward-compatible functional API."""
-    return ClaudeSessionDiscoverer(explicit_path=path).discover()

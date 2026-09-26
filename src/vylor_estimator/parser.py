@@ -1,11 +1,3 @@
-"""parser.py -- Parse Claude session JSONL files into structured Turn dataclasses.
-
-Handles:
-- Multi-file session directories
-- Sub-agent sessions (parentUuid chains stitched into root session)
-- Deduplication of messages by message ID
-- Duration calculation using parent event timestamps
-"""
 from __future__ import annotations
 
 import json
@@ -18,7 +10,6 @@ from typing import Any
 from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
-    compute_turn_cost,
 )
 
 
@@ -26,10 +17,6 @@ from vylor_estimator.pricing import (
 class ToolCall:
     name: str
     args: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def args_str(self) -> str:
-        return json.dumps(self.args, ensure_ascii=False) if self.args else ""
 
 
 @dataclass
@@ -41,18 +28,14 @@ class Turn:
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int
-    cache_write_tokens: int   # total cache creation tokens
+    cache_write_tokens: int
     ephemeral_5m_tokens: int
     ephemeral_1h_tokens: int
     reasoning_tokens: int
     duration_seconds: float | None
     tool_calls: list[ToolCall]
-    cost: float               # baseline cost (pre-savings)
+    cost: float
     is_subagent: bool
-
-    @property
-    def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -64,29 +47,10 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
-def _extract_tool_calls(content: list[dict]) -> list[ToolCall]:
-    calls: list[ToolCall] = []
-    seen: set[str] = set()
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "tool_use":
-            name = item.get("name", "")
-            args = item.get("input", {}) or {}
-            key = f"{name}:{json.dumps(args, sort_keys=True)}"
-            if key not in seen:
-                seen.add(key)
-                calls.append(ToolCall(name=name, args=args))
-    return calls
-
-
 class ISessionParser(ABC):
-    """Abstract interface for session parsers."""
-
     @abstractmethod
     def parse(self, paths: list[Path]) -> list[Turn]:
         """Parse session files and return a flat list of Turns."""
-        pass
 
 
 class ClaudeJsonlParser(ISessionParser):
@@ -96,16 +60,7 @@ class ClaudeJsonlParser(ISessionParser):
         self.pricing_calculator = pricing_calculator or ClaudePricingCalculator()
 
     def parse(self, paths: list[Path]) -> list[Turn]:
-        """
-        Parse a list of .jsonl files and return a flat, deduplicated list of Turns.
-
-        Sub-agent sessions are stitched into their parent session via parentUuid.
-        Turns are ordered by timestamp.
-        """
-        # Index all raw events by UUID across all files
         events_by_uuid: dict[str, dict] = {}
-
-        # Collect raw assistant message data keyed by message id
         messages_map: dict[str, dict] = {}
         message_order: list[str] = []
 
@@ -159,7 +114,6 @@ class ClaudeJsonlParser(ISessionParser):
                             if not entry["model"] and msg.get("model"):
                                 entry["model"] = msg.get("model", "")
 
-                            # Accumulate tool calls
                             for item in msg.get("content", []):
                                 if isinstance(item, dict) and item.get("type") == "tool_use":
                                     name = item.get("name", "")
@@ -244,11 +198,5 @@ class ClaudeJsonlParser(ISessionParser):
                 is_subagent=entry["is_subagent"],
             ))
 
-        # Sort by timestamp
         turns.sort(key=lambda t: t.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return turns
-
-
-def parse_files(paths: list[Path], pricing_calculator: IPricingCalculator | None = None) -> list[Turn]:
-    """Backward-compatible helper function."""
-    return ClaudeJsonlParser(pricing_calculator=pricing_calculator).parse(paths)

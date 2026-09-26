@@ -1,59 +1,59 @@
 """test_classifier.py -- Tests for the tool-use classifier."""
-from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
-from vylor_estimator.classifier import VylorTool, classify_turns
-from vylor_estimator.parser import parse_files
+from vylor_estimator.classifier import PatternTurnClassifier, VylorTool
+from vylor_estimator.parser import ClaudeJsonlParser
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_list_dir_classified_as_repo_map():
-    turns = parse_files([FIXTURES / "sample_session.jsonl"])
-    classified = classify_turns(turns)
+@pytest.fixture
+def classifier() -> PatternTurnClassifier:
+    return PatternTurnClassifier()
+
+
+@pytest.fixture
+def parser() -> ClaudeJsonlParser:
+    return ClaudeJsonlParser()
+
+
+def test_list_dir_classified_as_repo_map(classifier: PatternTurnClassifier, parser: ClaudeJsonlParser):
+    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
+    classified = classifier.classify(turns)
     repo_map_turns = [ct for ct in classified if ct.vylor_tool == VylorTool.REPO_MAP]
     assert len(repo_map_turns) >= 1
 
 
-def test_grep_classified_as_symbol_lookup():
-    turns = parse_files([FIXTURES / "sample_session.jsonl"])
-    classified = classify_turns(turns)
+def test_grep_classified_as_symbol_lookup(classifier: PatternTurnClassifier, parser: ClaudeJsonlParser):
+    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
+    classified = classifier.classify(turns)
     symbol_turns = [ct for ct in classified if ct.vylor_tool == VylorTool.FIND_CODE_DEFINITION]
     assert len(symbol_turns) >= 1
 
 
-def test_multi_read_classified_as_find_files():
-    turns = parse_files([FIXTURES / "sample_session.jsonl"])
-    classified = classify_turns(turns)
+def test_multi_read_classified_as_find_files(classifier: PatternTurnClassifier, parser: ClaudeJsonlParser):
+    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
+    classified = classifier.classify(turns)
     file_turns = [ct for ct in classified if ct.vylor_tool == VylorTool.FIND_FILES]
     assert len(file_turns) >= 1
 
 
-def test_text_only_turn_not_intercepted():
-    turns = parse_files([FIXTURES / "sample_session.jsonl"])
-    classified = classify_turns(turns)
+def test_text_only_turn_not_intercepted(classifier: PatternTurnClassifier, parser: ClaudeJsonlParser):
+    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
+    classified = classifier.classify(turns)
     # Last turn (msg_004) is text-only, should not be intercepted
     text_only = [ct for ct in classified if not ct.turn.tool_calls]
     for ct in text_only:
         assert ct.vylor_intercept is False
+        assert ct.vylor_tool is None
 
 
-def test_savings_fraction_conservative():
-    turns = parse_files([FIXTURES / "sample_session.jsonl"])
-    classified = classify_turns(turns)
-    for ct in classified:
-        if ct.vylor_intercept:
-            assert ct.savings_fraction <= 1.0, f"Savings fraction too aggressive: {ct.savings_fraction}"
-        else:
-            assert ct.savings_fraction == 0.0
-
-
-def test_claude_code_read_and_glob_recognized():
+def test_claude_code_read_and_glob_recognized(classifier: PatternTurnClassifier):
     """Verify that Claude Code tools Read and Glob are recognized."""
     from datetime import datetime, timezone
     from vylor_estimator.parser import Turn, ToolCall
-    from vylor_estimator.classifier import classify_turn
 
     t_read = Turn(
         turn_id="t_read",
@@ -72,7 +72,7 @@ def test_claude_code_read_and_glob_recognized():
         cost=0.01,
         is_subagent=False,
     )
-    ct_read = classify_turn(t_read)
+    ct_read = classifier.classify_turn(t_read)
     assert ct_read.vylor_intercept is True
     assert ct_read.vylor_tool == VylorTool.FIND_FILES
 
@@ -93,6 +93,6 @@ def test_claude_code_read_and_glob_recognized():
         cost=0.01,
         is_subagent=False,
     )
-    ct_glob = classify_turn(t_glob)
+    ct_glob = classifier.classify_turn(t_glob)
     assert ct_glob.vylor_intercept is True
     assert ct_glob.vylor_tool == VylorTool.REPO_MAP

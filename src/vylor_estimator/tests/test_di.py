@@ -7,7 +7,6 @@ import pytest
 
 from vylor_estimator.classifier import (
     ClassifiedTurn,
-    ITurnClassifier,
     PatternTurnClassifier,
     VylorTool,
 )
@@ -17,24 +16,14 @@ from vylor_estimator.discovery import (
 )
 from vylor_estimator.parser import (
     ClaudeJsonlParser,
-    ISessionParser,
     ToolCall,
     Turn,
 )
-from vylor_estimator.pricing import (
-    ClaudePricingCalculator,
-    IPricingCalculator,
-)
-from vylor_estimator.report.base import (
-    IReportRenderer,
-    ReportRendererFactory,
-)
+from vylor_estimator.pricing import IPricingCalculator
+from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.report.terminal import TerminalReportRenderer
-from vylor_estimator.report.html_report import HtmlReportRenderer
-from vylor_estimator.report.json_report import JsonReportRenderer
 from vylor_estimator.savings import (
     ConservativeSavingsEngine,
-    ISavingsEngine,
     SavingsReport,
 )
 from vylor_estimator.service import (
@@ -88,7 +77,6 @@ class RecordingRenderer(IReportRenderer):
         self,
         report: SavingsReport,
         date_range_label: str = "All-time",
-        output_path: Path | str | None = None,
     ) -> None:
         self.rendered_reports.append(report)
         self.labels.append(date_range_label)
@@ -168,26 +156,16 @@ def test_estimator_service_dependency_injection():
     assert renderer_spy.labels[0] == "Since 2025-01-01"
 
 
-def test_renderer_factory():
-    """Verify ReportRendererFactory returns correct strategy implementations."""
-    assert isinstance(ReportRendererFactory.get_renderer("terminal"), TerminalReportRenderer)
-    assert isinstance(ReportRendererFactory.get_renderer("html"), HtmlReportRenderer)
-    assert isinstance(ReportRendererFactory.get_renderer("json"), JsonReportRenderer)
-
-    with pytest.raises(ValueError, match="Unknown report format"):
-        ReportRendererFactory.get_renderer("invalid_format")
-
-
 def test_create_estimator_composition_root():
     """Verify create_estimator wires up default production dependencies."""
-    service = create_estimator(path=FIXTURES / "sample_session.jsonl", output_format="json", show_progress=False)
+    service = create_estimator(path=FIXTURES / "sample_session.jsonl", show_progress=False)
 
     assert isinstance(service, EstimatorService)
     assert isinstance(service.discoverer, ClaudeSessionDiscoverer)
     assert isinstance(service.parser, ClaudeJsonlParser)
     assert isinstance(service.classifier, PatternTurnClassifier)
     assert isinstance(service.savings_engine, ConservativeSavingsEngine)
-    assert isinstance(service.renderer, JsonReportRenderer)
+    assert isinstance(service.renderer, TerminalReportRenderer)
 
 
 def test_date_filter_cutoff_calculations():

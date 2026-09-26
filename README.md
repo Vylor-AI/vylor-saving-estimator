@@ -1,8 +1,8 @@
 # vylor-savings-estimator
 
-> **Instantly estimate how much [Vylor MCP](https://github.com/vylor-ai/vylor-mcp) cuts costs, tokens, and time on your Claude AI sessions — zero configuration required.**
+> **Instantly estimate how much [Vylor MCP](https://github.com/vylor-ai/vylor-mcp) cuts costs and tokens on your Claude AI sessions — zero configuration required.**
 
-Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects file-exploration and repo-crawling patterns that Vylor MCP replaces, and produces a rich savings report tracking **cost cut**, **tokens cut**, and **time cut**.
+Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects file-exploration and repo-crawling patterns that Vylor MCP replaces, and produces a rich savings report tracking **cost cut** and **tokens cut**.
 
 ---
 
@@ -11,7 +11,7 @@ Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), det
 - **Automatic Session Discovery**: Automatically discovers sessions from default Claude Code CLI (`~/.claude/projects/`) and Claude Desktop directories across Windows, macOS, and Linux.
 - **Automatic Sub-Agent Stitching**: Detects background sub-agents (e.g. `Explore` agents spawned via the `Agent` tool) and stitches them into their root task session, reporting true total task cost and sub-agent turn counts.
 - **Direct File-Cache Compounding Model**: Accurately models the prompt cache "snowball effect"—avoiding file dumps on early turns eliminates re-reading those files from the prompt cache on every subsequent turn.
-- **Rich Output Formats**: Terminal tables with `rich`, self-contained interactive HTML with Chart.js charts, and machine-readable JSON exports.
+- **Rich Terminal Report**: Beautiful, modern terminal dashboards powered by `rich` with full savings breakdowns by tool, model, and session.
 - **Extensible OOP Architecture**: Built with SOLID principles, abstract interfaces (`ISessionDiscoverer`, `ISessionParser`, `ITurnClassifier`, `ISavingsEngine`, `IReportRenderer`), and Dependency Injection.
 
 ---
@@ -50,10 +50,6 @@ vylor-estimate --since 2025-09-01
 # Explicit path (single file or custom directory)
 vylor-estimate /path/to/session.jsonl
 vylor-estimate /path/to/sessions/
-
-# Export reports
-vylor-estimate --format html -o report.html
-vylor-estimate --format json -o report.json
 ```
 
 ---
@@ -68,7 +64,6 @@ In Claude Code and Claude Desktop, reading files writes their contents directly 
 2. **Downstream Cache Reduction**: That avoided volume is subtracted from `cache_read_tokens` on every future turn in the session:
    $$\text{saved\_cache\_read} = \min(\text{turn.cache\_read\_tokens}, \text{accumulated\_avoided\_context})$$
 3. **0% Output Tokens**: The model still writes all its code, plans, and answers—output tokens are never credited as saved.
-4. **I/O Latency**: Eliminates file-reading disk/network round-trip time on intercepted turns.
 
 ---
 
@@ -97,7 +92,6 @@ Found 2 session file(s). Parsing...
 |---------------------+------------------+----------------+----------+--------|
 | Total Cost          |          $0.5565 |        $0.3080 | -$0.2485 | -44.7% |
 | Total Tokens        |            1.03M |         377.1K |  -656.0K | -63.5% |
-| Total Time          |           2m 48s |         2m 11s |     -36s | -21.9% |
 +-----------------------------------------------------------------------------+
 
 --------------------------- Breakdown by Vylor Tool ---------------------------

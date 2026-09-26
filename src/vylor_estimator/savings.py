@@ -1,29 +1,13 @@
-"""savings.py -- Compounding Cache Savings calculation engine.
-
-Accounts for the session-level cache compounding effect:
-1. Intercepted file exploration turns save on new context (input_tokens + cache_write_tokens).
-2. The avoided context is tracked chronologically per session.
-3. Every subsequent turn in the session (even text-generation or editing turns)
-   pays less cache_read_tokens because avoided context was never dumped into the prompt cache.
-4. Mathematical invariants ensure saved tokens and costs never exceed actual baseline amounts.
-"""
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from vylor_estimator.classifier import (
-    CACHE_READ_SAVINGS_FRACTION,
-    TIME_SAVINGS_FRACTION,
-    ClassifiedTurn,
-    VylorTool,
-)
+from vylor_estimator.classifier import ClassifiedTurn
 from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
-    compute_turn_cost,
 )
 
 
@@ -34,7 +18,6 @@ class TurnSavings:
     saved_cache_tokens: int            # avoided prompt cache read tokens
     saved_cache_write_tokens: int = 0  # avoided cache creation tokens
     saved_cost: float = 0.0
-    saved_time_seconds: float | None = None
 
     @property
     def total_saved_tokens(self) -> int:
@@ -54,14 +37,12 @@ class Aggregate:
     baseline_output_tokens: int = 0
     baseline_cache_read_tokens: int = 0
     baseline_cache_write_tokens: int = 0
-    baseline_time_seconds: float = 0.0
 
     # Savings
     saved_cost: float = 0.0
     saved_input_tokens: int = 0
     saved_cache_tokens: int = 0        # cache read
     saved_cache_write_tokens: int = 0  # cache creation
-    saved_time_seconds: float = 0.0
 
     # Per-tool breakdown: {VylorTool: {turns, saved_cost, saved_tokens}}
     by_tool: dict[str, dict] = field(default_factory=dict)
@@ -76,10 +57,6 @@ class Aggregate:
     @property
     def estimated_tokens(self) -> int:
         return max(0, self.baseline_total_tokens - self.total_saved_tokens)
-
-    @property
-    def estimated_time_seconds(self) -> float:
-        return max(0.0, self.baseline_time_seconds - self.saved_time_seconds)
 
     @property
     def baseline_total_tokens(self) -> int:
@@ -108,12 +85,6 @@ class Aggregate:
             return 0.0
         return round((self.total_saved_tokens / total) * 100, 1)
 
-    @property
-    def pct_time_cut(self) -> float:
-        if self.baseline_time_seconds == 0:
-            return 0.0
-        return round((self.saved_time_seconds / self.baseline_time_seconds) * 100, 1)
-
 
 @dataclass
 class SavingsReport:
@@ -125,12 +96,9 @@ class SavingsReport:
 
 
 class ISavingsEngine(ABC):
-    """Abstract interface for savings calculation."""
-
     @abstractmethod
     def calculate(self, classified_turns: list[ClassifiedTurn]) -> SavingsReport:
         """Compute the full savings report from classified turns."""
-        pass
 
 
 class ConservativeSavingsEngine(ISavingsEngine):
@@ -148,12 +116,8 @@ class ConservativeSavingsEngine(ISavingsEngine):
     def __init__(
         self,
         pricing_calculator: IPricingCalculator | None = None,
-        cache_savings_fraction: float = CACHE_READ_SAVINGS_FRACTION,
-        time_savings_fraction: float = TIME_SAVINGS_FRACTION,
     ) -> None:
         self.pricing_calculator = pricing_calculator or ClaudePricingCalculator()
-        self.cache_savings_fraction = cache_savings_fraction
-        self.time_savings_fraction = time_savings_fraction
 
     def _ensure_tool_key(self, agg: Aggregate, tool: str) -> None:
         if tool not in agg.by_tool:
@@ -181,24 +145,21 @@ class ConservativeSavingsEngine(ISavingsEngine):
         agg.baseline_output_tokens += turn.output_tokens
         agg.baseline_cache_read_tokens += turn.cache_read_tokens
         agg.baseline_cache_write_tokens += turn.cache_write_tokens
-        if turn.duration_seconds is not None:
-            agg.baseline_time_seconds += turn.duration_seconds
 
         if ts.saved_cost > 0 or ts.total_saved_tokens > 0:
             agg.saved_cost += ts.saved_cost
             agg.saved_input_tokens += ts.saved_input_tokens
             agg.saved_cache_tokens += ts.saved_cache_tokens
             agg.saved_cache_write_tokens += ts.saved_cache_write_tokens
-            if ts.saved_time_seconds is not None:
-                agg.saved_time_seconds += ts.saved_time_seconds
 
         if ct.vylor_intercept:
             agg.turns_intercepted += 1
-            tool_key = ct.vylor_tool.value
-            self._ensure_tool_key(agg, tool_key)
-            agg.by_tool[tool_key]["turns"] += 1
-            agg.by_tool[tool_key]["saved_cost"] += ts.saved_cost
-            agg.by_tool[tool_key]["saved_tokens"] += ts.total_saved_tokens
+            if ct.vylor_tool is not None:
+                tool_key = ct.vylor_tool.value
+                self._ensure_tool_key(agg, tool_key)
+                agg.by_tool[tool_key]["turns"] += 1
+                agg.by_tool[tool_key]["saved_cost"] += ts.saved_cost
+                agg.by_tool[tool_key]["saved_tokens"] += ts.total_saved_tokens
 
         model_key = turn.model or "unknown"
         self._ensure_model_key(agg, model_key)
@@ -220,13 +181,12 @@ class ConservativeSavingsEngine(ISavingsEngine):
         for ct in classified_turns:
             turns_by_session[ct.turn.session_id].append(ct)
 
-        for session_id, session_cts in turns_by_session.items():
-            # Group by context stream (main agent vs subagent) to accurately model prompt caching
+        for session_cts in turns_by_session.values():
             streams: dict[bool, list[ClassifiedTurn]] = defaultdict(list)
             for ct in session_cts:
                 streams[ct.turn.is_subagent].append(ct)
 
-            for is_sub, stream_cts in streams.items():
+            for stream_cts in streams.values():
                 stream_cts.sort(
                     key=lambda x: x.turn.timestamp or datetime.min.replace(tzinfo=timezone.utc)
                 )
@@ -237,51 +197,22 @@ class ConservativeSavingsEngine(ISavingsEngine):
                     turn = ct.turn
 
                     saved_input = 0
-                    saved_cache_write = 0
                     saved_cache_read = 0
 
+                    # 1. Avoided cache read accumulated from prior steps
+                    if accumulated_avoided_context > 0 and turn.cache_read_tokens > 0:
+                        saved_cache_read = min(turn.cache_read_tokens, accumulated_avoided_context)
+
+                    # 2. If this turn is intercepted by Vylor:
                     if ct.vylor_intercept:
-                        # New context introduced in this turn that Vylor would replace
-                        new_tokens = turn.input_tokens + turn.cache_write_tokens
-                        saved_new_tokens = int(new_tokens * ct.savings_fraction)
+                        new_context = turn.input_tokens + turn.cache_write_tokens
+                        avoided_context = int(new_context * ct.savings_fraction)
 
-                        saved_input = min(turn.input_tokens, saved_new_tokens)
-                        saved_cache_write = min(
-                            turn.cache_write_tokens, saved_new_tokens - saved_input
-                        )
-
-                        # Avoided cache read from prior turns
-                        prior_cache_savings = int(
-                            min(turn.cache_read_tokens, accumulated_avoided_context)
-                            * self.cache_savings_fraction
-                        )
-                        # Direct warm index replacement for current turn
-                        remaining_cache = max(0, turn.cache_read_tokens - prior_cache_savings)
-                        direct_cache_savings = int(remaining_cache * self.cache_savings_fraction)
-                        saved_cache_read = min(
-                            turn.cache_read_tokens, prior_cache_savings + direct_cache_savings
-                        )
-
-                        # Accumulate avoided context for downstream turns
-                        accumulated_avoided_context += saved_new_tokens
-
-                    else:
-                        # Downstream turns (e.g. reasoning/coding/other tools) benefit from avoided cache bloat
-                        if accumulated_avoided_context > 0 and turn.cache_read_tokens > 0:
-                            saved_cache_read = int(
-                                min(turn.cache_read_tokens, accumulated_avoided_context)
-                                * self.cache_savings_fraction
-                            )
-
-                    # Split saved_cache_write between 5m and 1h ephemeral tokens
-                    saved_5m = 0
-                    saved_1h = 0
-                    if turn.cache_write_tokens > 0 and saved_cache_write > 0:
-                        ratio_5m = turn.ephemeral_5m_tokens / turn.cache_write_tokens
-                        saved_5m = int(saved_cache_write * ratio_5m)
-                        saved_1h = saved_cache_write - saved_5m
+                        saved_input = min(turn.input_tokens, int(turn.input_tokens * ct.savings_fraction))
+                        accumulated_avoided_context += avoided_context
 
                     # Recompute cost delta
+                    # Cache write (ephemeral_5m and ephemeral_1h) is calculated normally
                     original_cost = self.pricing_calculator.compute_turn_cost(
                         model=turn.model,
                         input_tokens=turn.input_tokens,
@@ -295,22 +226,17 @@ class ConservativeSavingsEngine(ISavingsEngine):
                         input_tokens=max(0, turn.input_tokens - saved_input),
                         output_tokens=turn.output_tokens,
                         cache_read_tokens=max(0, turn.cache_read_tokens - saved_cache_read),
-                        ephemeral_5m_tokens=max(0, turn.ephemeral_5m_tokens - saved_5m),
-                        ephemeral_1h_tokens=max(0, turn.ephemeral_1h_tokens - saved_1h),
+                        ephemeral_5m_tokens=turn.ephemeral_5m_tokens,
+                        ephemeral_1h_tokens=turn.ephemeral_1h_tokens,
                     )
                     saved_cost = max(0.0, min(original_cost, original_cost - reduced_cost))
-
-                    saved_time: float | None = None
-                    if ct.vylor_intercept and turn.duration_seconds is not None:
-                        saved_time = turn.duration_seconds * ct.savings_fraction * self.time_savings_fraction
 
                     ts = TurnSavings(
                         classified=ct,
                         saved_input_tokens=saved_input,
                         saved_cache_tokens=saved_cache_read,
-                        saved_cache_write_tokens=saved_cache_write,
+                        saved_cache_write_tokens=0,
                         saved_cost=saved_cost,
-                        saved_time_seconds=saved_time,
                     )
                     turn_savings_list.append(ts)
 
@@ -327,12 +253,3 @@ class ConservativeSavingsEngine(ISavingsEngine):
             by_day=dict(sorted(by_day.items())),
             turn_savings=turn_savings_list,
         )
-
-
-def compute_savings(
-    classified_turns: list[ClassifiedTurn],
-    pricing_calculator: IPricingCalculator | None = None,
-) -> SavingsReport:
-    """Backward-compatible functional API."""
-    engine = ConservativeSavingsEngine(pricing_calculator=pricing_calculator)
-    return engine.calculate(classified_turns)

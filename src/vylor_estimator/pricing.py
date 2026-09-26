@@ -1,14 +1,8 @@
-"""pricing.py -- Model pricing table and calculator for Claude models.
-
-Rates are tuples of (input, 5m_cache_write, 1h_cache_write, cache_read, output)
-per 1,000,000 tokens (USD).
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Mapping
+from collections.abc import Mapping
 
-# (input, 5m_cache_write, 1h_cache_write, cache_read, output) per 1M tokens
 PRICING: dict[str, tuple[float, float, float, float, float]] = {
     "claude-fable-5":    (10.0, 12.50, 20.0, 1.0,  50.0),
     "claude-mythos-5":   (10.0, 12.50, 20.0, 1.0,  50.0),
@@ -31,12 +25,9 @@ _DEFAULT_RATES: tuple[float, float, float, float, float] = (2.0, 2.50, 4.0, 0.20
 
 
 class IPricingCalculator(ABC):
-    """Abstract interface for model pricing and turn cost calculation."""
-
     @abstractmethod
     def get_pricing(self, model_name: str) -> tuple[float, float, float, float, float]:
         """Return (input, 5m_cache_write, 1h_cache_write, cache_read, output) per 1M tokens."""
-        pass
 
     @abstractmethod
     def compute_turn_cost(
@@ -49,7 +40,6 @@ class IPricingCalculator(ABC):
         ephemeral_1h_tokens: int = 0,
     ) -> float:
         """Compute the baseline USD cost for a single turn."""
-        pass
 
 
 class ClaudePricingCalculator(IPricingCalculator):
@@ -90,31 +80,3 @@ class ClaudePricingCalculator(IPricingCalculator):
             + cache_read_tokens * r[3]
             + output_tokens * r[4]
         ) / 1_000_000.0
-
-
-# Default instance for backward compatibility
-_DEFAULT_CALCULATOR = ClaudePricingCalculator()
-
-
-def get_pricing(model_name: str) -> tuple[float, float, float, float, float]:
-    """Return rates for the model. Uses default calculator."""
-    return _DEFAULT_CALCULATOR.get_pricing(model_name)
-
-
-def compute_turn_cost(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-    ephemeral_5m_tokens: int = 0,
-    ephemeral_1h_tokens: int = 0,
-) -> float:
-    """Compute the baseline USD cost for a single turn. Uses default calculator."""
-    return _DEFAULT_CALCULATOR.compute_turn_cost(
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        ephemeral_5m_tokens=ephemeral_5m_tokens,
-        ephemeral_1h_tokens=ephemeral_1h_tokens,
-    )

@@ -1,23 +1,15 @@
-"""terminal.py -- Rich-formatted terminal report (Windows-safe, no emojis)."""
 from __future__ import annotations
 
-import sys
-from datetime import timedelta
-from pathlib import Path
-
-from rich.align import Align
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich import box
-from rich.text import Text
 
 from vylor_estimator.report.base import IReportRenderer
-from vylor_estimator.savings import Aggregate, SavingsReport
+from vylor_estimator.savings import SavingsReport
 
-# Force UTF-8 on Windows to avoid cp1252 charmap errors
-console = Console(highlight=False)
+ACCENT = "#6C47FF"
 
 
 def _fmt_tokens(n: int) -> str:
@@ -28,20 +20,7 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
-def _fmt_time(seconds: float) -> str:
-    td = timedelta(seconds=seconds)
-    h = int(td.total_seconds() // 3600)
-    m = int((td.total_seconds() % 3600) // 60)
-    s = int(td.total_seconds() % 60)
-    if h > 0:
-        return f"{h}h {m}m"
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-
 class TerminalReportRenderer(IReportRenderer):
-    """Renders the savings report to the terminal using rich tables."""
 
     def __init__(self, console: Console | None = None) -> None:
         self.console = console or Console(highlight=False)
@@ -50,32 +29,24 @@ class TerminalReportRenderer(IReportRenderer):
         self,
         report: SavingsReport,
         date_range_label: str = "All-time",
-        output_path: Path | str | None = None,
     ) -> None:
         agg = report.total
         c = self.console
 
-        # Header
         c.print()
-        c.print(Align.center(
-            Text("  VYLOR SAVINGS ESTIMATE  ", style="bold white on #6C47FF")
-        ))
-        c.print(Align.center(Text(
-            f"Analyzed: {len(report.by_session)} session(s)  |  "
-            f"{agg.turns_analyzed} turns  |  {date_range_label}",
-            style="dim"
-        )))
+        c.print(f"[bold white on {ACCENT}]  VYLOR SAVINGS ESTIMATE  [/]", justify="center")
+        c.print(
+            f"[dim]Analyzed: {len(report.by_session)} session(s)  |  "
+            f"{agg.turns_analyzed} turns  |  {date_range_label}[/dim]",
+            justify="center",
+        )
         if agg.subagent_turns > 0:
-            c.print(Align.center(Text(
-                f"(includes {agg.subagent_turns} sub-agent turns)",
-                style="dim italic"
-            )))
+            c.print(f"[dim italic](includes {agg.subagent_turns} sub-agent turns)[/]", justify="center")
         c.print()
 
-        # Main metrics table
         table = Table(
             box=box.ROUNDED, show_header=True,
-            header_style="bold #6C47FF", border_style="#6C47FF", expand=True
+            header_style=f"bold {ACCENT}", border_style=ACCENT, expand=True
         )
         table.add_column("Metric",          style="bold white", min_width=18)
         table.add_column("Baseline (paid)", justify="right", style="yellow")
@@ -97,18 +68,11 @@ class TerminalReportRenderer(IReportRenderer):
             f"-{_fmt_tokens(agg.total_saved_tokens)}",
             f"-{agg.pct_tokens_cut:.1f}%",
         )
-        bl_t = _fmt_time(agg.baseline_time_seconds) if agg.baseline_time_seconds > 0 else "N/A"
-        es_t = _fmt_time(agg.estimated_time_seconds) if agg.baseline_time_seconds > 0 else "N/A"
-        sv_t = f"-{_fmt_time(agg.saved_time_seconds)}" if agg.saved_time_seconds > 0 else "N/A"
-        pc_t = f"-{agg.pct_time_cut:.1f}%" if agg.pct_time_cut > 0 else "N/A"
-        table.add_row("Total Time", bl_t, es_t, sv_t, pc_t)
-
         c.print(table)
         c.print()
 
-        # Breakdown by Vylor tool
         if agg.by_tool:
-            c.print(Rule("[bold #6C47FF]Breakdown by Vylor Tool", style="#6C47FF"))
+            c.print(Rule(f"[bold {ACCENT}]Breakdown by Vylor Tool", style=ACCENT))
             t2 = Table(box=box.SIMPLE_HEAD, header_style="bold white",
                        border_style="dim", expand=True)
             t2.add_column("Vylor Tool",        style="bold cyan")
@@ -126,9 +90,8 @@ class TerminalReportRenderer(IReportRenderer):
             c.print(t2)
             c.print()
 
-        # Breakdown by model
         if agg.by_model:
-            c.print(Rule("[bold #6C47FF]Breakdown by Model", style="#6C47FF"))
+            c.print(Rule(f"[bold {ACCENT}]Breakdown by Model", style=ACCENT))
             t3 = Table(box=box.SIMPLE_HEAD, header_style="bold white",
                        border_style="dim", expand=True)
             t3.add_column("Model",         style="bold white")
@@ -147,9 +110,8 @@ class TerminalReportRenderer(IReportRenderer):
             c.print(t3)
             c.print()
 
-        # Top sessions
         if report.by_session:
-            c.print(Rule("[bold #6C47FF]Top Sessions by Savings", style="#6C47FF"))
+            c.print(Rule(f"[bold {ACCENT}]Top Sessions by Savings", style=ACCENT))
             t4 = Table(box=box.SIMPLE_HEAD, header_style="bold white",
                        border_style="dim", expand=True)
             t4.add_column("Session ID",    style="dim", no_wrap=True)
@@ -172,15 +134,9 @@ class TerminalReportRenderer(IReportRenderer):
             c.print(t4)
             c.print()
 
-        # Footer
         c.print(Panel(
             "[dim]Direct cache model: 100% avoided file reads | 100% downstream cache reads | 0% output tokens[/dim]\n"
-            "[dim]Powered by [/dim][bold #6C47FF]Vylor MCP[/bold #6C47FF]"
+            f"[dim]Powered by [/dim][bold {ACCENT}]Vylor MCP[/bold {ACCENT}]"
             "[dim] -- https://github.com/vylor-ai/vylor-mcp[/dim]",
-            box=box.ROUNDED, border_style="dim #6C47FF", expand=True
+            box=box.ROUNDED, border_style=f"dim {ACCENT}", expand=True
         ))
-
-
-def print_report(report: SavingsReport, date_range_label: str = "All-time") -> None:
-    """Backward-compatible helper function."""
-    TerminalReportRenderer().render(report, date_range_label)

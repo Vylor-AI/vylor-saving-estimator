@@ -1,4 +1,3 @@
-"""service.py -- Orchestrator and Composition Root for Vylor Savings Estimator."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -24,10 +23,8 @@ from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
 )
-from vylor_estimator.report.base import (
-    IReportRenderer,
-    ReportRendererFactory,
-)
+from vylor_estimator.report.base import IReportRenderer
+from vylor_estimator.report.terminal import TerminalReportRenderer
 from vylor_estimator.savings import (
     ConservativeSavingsEngine,
     ISavingsEngine,
@@ -37,7 +34,6 @@ from vylor_estimator.savings import (
 
 @dataclass
 class DateFilter:
-    """Encapsulates date filtering criteria for session turns."""
     week: bool = False
     month: bool = False
     since: date | None = None
@@ -62,11 +58,6 @@ class DateFilter:
 
 
 class EstimatorService:
-    """
-    Orchestration service coordinating discovery, parsing, classification,
-    savings calculation, and reporting via Dependency Injection.
-    """
-
     def __init__(
         self,
         discoverer: ISessionDiscoverer,
@@ -86,9 +77,7 @@ class EstimatorService:
     def run(
         self,
         date_filter: DateFilter | None = None,
-        output_path: Path | str | None = None,
     ) -> SavingsReport:
-        """Execute the estimation pipeline."""
         session_files = self.discoverer.discover()
         if not session_files:
             raise FileNotFoundError("No session files found.")
@@ -115,14 +104,13 @@ class EstimatorService:
 
         label = date_filter.label if date_filter else "All-time"
         if self.renderer is not None:
-            self.renderer.render(report, date_range_label=label, output_path=output_path)
+            self.renderer.render(report, date_range_label=label)
 
         return report
 
 
 def create_estimator(
     path: str | Path | None = None,
-    output_format: str = "terminal",
     pricing_calculator: IPricingCalculator | None = None,
     discoverer: ISessionDiscoverer | None = None,
     parser: ISessionParser | None = None,
@@ -131,16 +119,12 @@ def create_estimator(
     renderer: IReportRenderer | None = None,
     show_progress: bool = True,
 ) -> EstimatorService:
-    """
-    Composition Root: wires dependencies and instantiates an EstimatorService.
-    Supports overriding individual dependencies if desired.
-    """
     pricing = pricing_calculator or ClaudePricingCalculator()
     disc = discoverer or ClaudeSessionDiscoverer(explicit_path=path)
     pars = parser or ClaudeJsonlParser(pricing_calculator=pricing)
     clsf = classifier or PatternTurnClassifier()
     seng = savings_engine or ConservativeSavingsEngine(pricing_calculator=pricing)
-    rend = renderer or ReportRendererFactory.get_renderer(output_format)
+    rend = renderer or TerminalReportRenderer()
 
     console = Console()
     progress_cb = (lambda msg: console.print(f"[dim]{msg}[/dim]")) if show_progress else None
