@@ -92,137 +92,129 @@ def test_conservative_cap(
     savings_engine: ConservativeSavingsEngine,
     parser: ClaudeJsonlParser,
 ):
-    """Savings fraction should never exceed 70% for input tokens."""
+    """Savings should never exceed the baseline cost."""
     turns = parser.parse([FIXTURES / "sample_session.jsonl"])
     classified = classifier.classify(turns)
     report = savings_engine.calculate(classified)
     for ts in report.turn_savings:
-        if ts.classified.vylor_intercept:
-            fraction = ts.saved_input_tokens / max(ts.classified.turn.input_tokens, 1)
-            assert fraction <= 1.0, f"Savings fraction too high: {fraction}"
+        assert ts.saved_cost <= ts.classified.turn.cost + 1e-9, (
+            f"saved_cost {ts.saved_cost} exceeds turn cost {ts.classified.turn.cost}"
+        )
 
 
-def test_compounding_cache_savings_on_downstream_turns(savings_engine: ConservativeSavingsEngine):
-    """Verify that turns following an intercepted turn benefit from avoided cache bloat."""
+def _make_turn(
+    turn_id: str,
+    *,
+    session_id: str = "s1",
+    is_subagent: bool,
+    input_tokens: int = 1_000,
+    output_tokens: int = 200,
+    cache_read_tokens: int = 500,
+    cache_write_tokens: int = 300,
+    cost: float = 0.05,
+    minute: int = 0,
+):
+    """Helper: build a minimal Turn for unit tests."""
     from datetime import datetime, timezone
     from vylor_estimator.parser import Turn, ToolCall
-    from vylor_estimator.classifier import ClassifiedTurn, VylorTool
-
-    t1 = Turn(
-        turn_id="t1",
-        session_id="compounding_session",
+    return Turn(
+        turn_id=turn_id,
+        session_id=session_id,
         model="claude-sonnet-4.5",
-        timestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
-        input_tokens=100,
-        output_tokens=200,
-        cache_read_tokens=0,
-        cache_write_tokens=10_000,
-        ephemeral_5m_tokens=10_000,
-        ephemeral_1h_tokens=0,
-        reasoning_tokens=0,
-        duration_seconds=5.0,
-        tool_calls=[ToolCall(name="read_file", args={})],
-        cost=0.040,
-        is_subagent=False,
-    )
-    ct1 = ClassifiedTurn(
-        turn=t1,
-        vylor_intercept=True,
-        vylor_tool=VylorTool.FIND_FILES,
-        savings_fraction=0.70,
-        file_reads_count=3,
-    )
-
-    t2 = Turn(
-        turn_id="t2",
-        session_id="compounding_session",
-        model="claude-sonnet-4.5",
-        timestamp=datetime(2026, 1, 1, 10, 1, tzinfo=timezone.utc),
-        input_tokens=50,
-        output_tokens=300,
-        cache_read_tokens=10_000,
-        cache_write_tokens=0,
+        timestamp=datetime(2026, 1, 1, 10, minute, tzinfo=timezone.utc),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
         ephemeral_5m_tokens=0,
         ephemeral_1h_tokens=0,
         reasoning_tokens=0,
-        duration_seconds=3.0,
-        tool_calls=[],
-        cost=0.010,
-        is_subagent=False,
-    )
-    ct2 = ClassifiedTurn(
-        turn=t2,
-        vylor_intercept=False,
-        vylor_tool=None,
-        savings_fraction=0.0,
-        file_reads_count=0,
+        duration_seconds=1.0,
+        tool_calls=[ToolCall(name="read_file", args={})],
+        cost=cost,
+        is_subagent=is_subagent,
     )
 
-    report = savings_engine.calculate([ct1, ct2])
 
-    ts1 = report.turn_savings[0]
-    assert ts1.saved_cache_write_tokens == 0
+def test_subagent_turns_are_fully_saved(savings_engine: ConservativeSavingsEngine):
+    """
+    Every subagent turn should be credited with its full cost and all tokens.
+    Vylor MCP eliminates the background exploration agent entirely.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn
 
-    ts2 = report.turn_savings[1]
-    assert ts2.saved_cache_tokens > 0
-    assert ts2.saved_cost > 0.0
-    assert report.total.saved_cost > ts1.saved_cost
+    sub = _make_turn("sub1", is_subagent=True, cost=0.07,
+                     input_tokens=2_000, cache_read_tokens=1_000, cache_write_tokens=500)
+    ct = ClassifiedTurn(turn=sub, vylor_intercept=False)
+
+    report = savings_engine.calculate([ct])
+    ts = report.turn_savings[0]
+
+    assert ts.saved_cost == sub.cost
+    assert ts.saved_input_tokens == sub.input_tokens
+    assert ts.saved_cache_tokens == sub.cache_read_tokens
+    assert ts.saved_cache_write_tokens == sub.cache_write_tokens
 
 
-def test_sequential_file_reads_accumulate_cache_savings(
-    classifier: PatternTurnClassifier,
-    savings_engine: ConservativeSavingsEngine,
-):
-    """Verify that sequential 1-file reads are intercepted, accumulating cache reads are cut, and cache write is normal."""
-    from datetime import datetime, timezone
-    from vylor_estimator.parser import Turn, ToolCall
-    from vylor_estimator.classifier import VylorTool
+def test_main_agent_turns_produce_no_saving(savings_engine: ConservativeSavingsEngine):
+    """
+    Main-agent turns (is_subagent=False) should never produce any saving,
+    regardless of the tools they call or how many file reads they make.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn, VylorTool
 
-    turns = []
-    # Simulate 5 sequential single-file reads, each adding 5,000 tokens of file content
-    accum_cache = 0
-    for i in range(5):
-        t = Turn(
-            turn_id=f"seq_{i}",
-            session_id="seq_session",
-            model="claude-sonnet-4.5",
-            timestamp=datetime(2026, 1, 1, 10, i, tzinfo=timezone.utc),
-            input_tokens=5_000,
-            output_tokens=100,
-            cache_read_tokens=accum_cache,
-            cache_write_tokens=5_000,
-            ephemeral_5m_tokens=5_000,
-            ephemeral_1h_tokens=0,
-            reasoning_tokens=0,
-            duration_seconds=2.0,
-            tool_calls=[ToolCall(name="read_file")],
-            cost=0.05,
-            is_subagent=False,
-        )
-        turns.append(t)
-        accum_cache += 5_000
+    main = _make_turn("main1", is_subagent=False, cost=0.10,
+                      input_tokens=5_000, cache_read_tokens=3_000, cache_write_tokens=1_000)
+    ct = ClassifiedTurn(turn=main, vylor_intercept=True, vylor_tool=VylorTool.FIND_FILES)
 
-    classified = classifier.classify(turns)
-    for ct in classified:
-        assert ct.vylor_intercept is True
-        assert ct.vylor_tool == VylorTool.FIND_FILES
+    report = savings_engine.calculate([ct])
+    ts = report.turn_savings[0]
 
-    report = savings_engine.calculate(classified)
+    assert ts.saved_cost == 0.0
+    assert ts.saved_input_tokens == 0
+    assert ts.saved_cache_tokens == 0
+    assert ts.saved_cache_write_tokens == 0
 
-    # In step 0: no prior accumulation -> saved_cache_tokens == 0
-    assert report.turn_savings[0].saved_cache_tokens == 0
-    # In step 1: prior was 10,000 (input + write) -> saves the 5,000 accumulated cache read
-    assert report.turn_savings[1].saved_cache_tokens == 5_000
-    # In step 2: saves 10,000 accumulated cache read
-    assert report.turn_savings[2].saved_cache_tokens == 10_000
-    # In step 3: saves 15,000 accumulated cache read
-    assert report.turn_savings[3].saved_cache_tokens == 15_000
-    # In step 4: saves 20,000 accumulated cache read
-    assert report.turn_savings[4].saved_cache_tokens == 20_000
 
-    # Cache write is calculated normally (0 cut) across all turns
-    for ts in report.turn_savings:
-        assert ts.saved_cache_write_tokens == 0
+def test_mixed_session_saves_only_subagent_turns(savings_engine: ConservativeSavingsEngine):
+    """
+    In a session with both main and subagent turns, only the subagent turns are saved.
+    The aggregate saved_cost should equal the sum of all subagent turn costs.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn
 
-    assert report.total.saved_cache_tokens == 50_000
-    assert report.total.saved_cost > 0.0
+    main1 = _make_turn("m1", is_subagent=False, cost=0.02, minute=0)
+    sub1  = _make_turn("s1", is_subagent=True,  cost=0.05, minute=1)
+    sub2  = _make_turn("s2", is_subagent=True,  cost=0.03, minute=2)
+    main2 = _make_turn("m2", is_subagent=False, cost=0.04, minute=3)
+
+    cts = [ClassifiedTurn(turn=t, vylor_intercept=False) for t in [main1, sub1, sub2, main2]]
+    report = savings_engine.calculate(cts)
+
+    expected_saved = sub1.cost + sub2.cost  # 0.05 + 0.03 = 0.08
+    assert abs(report.total.saved_cost - expected_saved) < 1e-9
+    # Main turns contribute to baseline but not to savings
+    assert report.total.baseline_cost == pytest.approx(main1.cost + sub1.cost + sub2.cost + main2.cost)
+
+
+def test_subagent_token_totals_accumulate(savings_engine: ConservativeSavingsEngine):
+    """
+    With multiple subagent turns, total saved tokens should be the sum of
+    all their input + cache_read + cache_write tokens.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn
+
+    sub1 = _make_turn("s1", is_subagent=True,
+                      input_tokens=1_000, cache_read_tokens=500, cache_write_tokens=200,
+                      cost=0.02, minute=0)
+    sub2 = _make_turn("s2", is_subagent=True,
+                      input_tokens=2_000, cache_read_tokens=800, cache_write_tokens=300,
+                      cost=0.03, minute=1)
+
+    cts = [ClassifiedTurn(turn=t, vylor_intercept=False) for t in [sub1, sub2]]
+    report = savings_engine.calculate(cts)
+
+    assert report.total.saved_input_tokens == 3_000
+    assert report.total.saved_cache_tokens == 1_300
+    assert report.total.saved_cache_write_tokens == 500
+    assert report.total.total_saved_tokens == 4_800

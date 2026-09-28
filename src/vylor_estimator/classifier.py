@@ -30,18 +30,16 @@ _SYMBOL_SEARCH_TOOLS: frozenset[str] = frozenset([
     "semantic_search", "search_symbol", "find_symbol",
 ])
 
-_VYLOR_REPO_MAP_NAMES: frozenset[str] = frozenset([
+_VYLOR_TOOLS: frozenset[str] = frozenset([
     "mcp__vylor__request_repo_map",
     "vylor__request_repo_map",
     "request_repo_map",
-])
-_VYLOR_FIND_FILES_NAMES: frozenset[str] = frozenset([
     "mcp__vylor__find_files",
     "vylor__find_files",
-])
-_VYLOR_FIND_CODE_NAMES: frozenset[str] = frozenset([
+    "find_files",
     "mcp__vylor__find_code_definition",
     "vylor__find_code_definition",
+    "find_code_definition",
 ])
 
 
@@ -50,7 +48,6 @@ class ClassifiedTurn:
     turn: Turn
     vylor_intercept: bool
     vylor_tool: VylorTool | None = None
-    savings_fraction: float = 0.0
     file_reads_count: int = 0
 
 
@@ -70,38 +67,39 @@ class PatternTurnClassifier(ITurnClassifier):
         repo_map_tools: frozenset[str] = _REPO_MAP_TOOLS,
         file_read_tools: frozenset[str] = _FILE_READ_TOOLS,
         symbol_search_tools: frozenset[str] = _SYMBOL_SEARCH_TOOLS,
-        vylor_repo_map_names: frozenset[str] = _VYLOR_REPO_MAP_NAMES,
-        vylor_find_files_names: frozenset[str] = _VYLOR_FIND_FILES_NAMES,
-        vylor_find_code_names: frozenset[str] = _VYLOR_FIND_CODE_NAMES,
+        vylor_tools: frozenset[str] = _VYLOR_TOOLS,
     ) -> None:
         self.repo_map_tools = repo_map_tools
         self.file_read_tools = file_read_tools
         self.symbol_search_tools = symbol_search_tools
-        self.vylor_repo_map_names = vylor_repo_map_names
-        self.vylor_find_files_names = vylor_find_files_names
-        self.vylor_find_code_names = vylor_find_code_names
+        self.vylor_tools = vylor_tools
+        self.skipped_sessions: set[str] = set()
+
+    def is_vylor_tool(self, name: str) -> bool:
+        n = name.lower().strip()
+        return (
+            n.startswith("mcp__vylor__")
+            or n.startswith("vylor__")
+            or n in self.vylor_tools
+        )
 
     def classify_turn(self, turn: Turn) -> ClassifiedTurn:
         tool_names = [tc.name.lower().strip() for tc in turn.tool_calls]
 
-        file_reads = sum(1 for n in tool_names if n in self.file_read_tools)
+        # If turn already uses Vylor, it is not an unoptimized baseline turn to intercept
+        if any(self.is_vylor_tool(n) for n in tool_names):
+            return ClassifiedTurn(
+                turn=turn,
+                vylor_intercept=False,
+                file_reads_count=0,
+            )
 
+        file_reads = sum(1 for n in tool_names if n in self.file_read_tools)
         has_repo_map = any(n in self.repo_map_tools for n in tool_names)
         has_symbol_search = any(n in self.symbol_search_tools for n in tool_names)
 
-        has_vylor_repo_map = any(n in self.vylor_repo_map_names for n in tool_names)
-        has_vylor_find_files = any(n in self.vylor_find_files_names for n in tool_names)
-        has_vylor_find_code = any(n in self.vylor_find_code_names for n in tool_names)
-
         tool: VylorTool | None = None
-
-        if has_vylor_repo_map:
-            tool = VylorTool.REPO_MAP
-        elif has_vylor_find_code:
-            tool = VylorTool.FIND_CODE_DEFINITION
-        elif has_vylor_find_files:
-            tool = VylorTool.FIND_FILES
-        elif has_repo_map:
+        if has_repo_map:
             tool = VylorTool.REPO_MAP
         elif has_symbol_search:
             tool = VylorTool.FIND_CODE_DEFINITION
@@ -113,7 +111,6 @@ class PatternTurnClassifier(ITurnClassifier):
                 turn=turn,
                 vylor_intercept=True,
                 vylor_tool=tool,
-                savings_fraction=1.0,
                 file_reads_count=file_reads,
             )
 
@@ -124,4 +121,10 @@ class PatternTurnClassifier(ITurnClassifier):
         )
 
     def classify(self, turns: list[Turn]) -> list[ClassifiedTurn]:
-        return [self.classify_turn(t) for t in turns]
+        self.skipped_sessions = {
+            t.session_id
+            for t in turns
+            if any(self.is_vylor_tool(tc.name) for tc in t.tool_calls)
+        }
+        eligible_turns = [t for t in turns if t.session_id not in self.skipped_sessions]
+        return [self.classify_turn(t) for t in eligible_turns]

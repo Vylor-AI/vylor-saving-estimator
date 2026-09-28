@@ -100,6 +100,12 @@ class EstimatorService:
             raise ValueError("No turns found in the specified date range.")
 
         classified = self.classifier.classify(turns)
+
+        if self.progress_callback and getattr(self.classifier, "skipped_sessions", None):
+            skipped_count = len(self.classifier.skipped_sessions)
+            if skipped_count > 0:
+                self.progress_callback(f"Skipped {skipped_count} session(s) already using Vylor MCP.")
+
         report = self.savings_engine.calculate(classified)
 
         label = date_filter.label if date_filter else "All-time"
@@ -123,7 +129,7 @@ def create_estimator(
     disc = discoverer or ClaudeSessionDiscoverer(explicit_path=path)
     pars = parser or ClaudeJsonlParser(pricing_calculator=pricing)
     clsf = classifier or PatternTurnClassifier()
-    seng = savings_engine or ConservativeSavingsEngine(pricing_calculator=pricing)
+    seng = savings_engine or ConservativeSavingsEngine()
     rend = renderer or TerminalReportRenderer()
 
     console = Console()

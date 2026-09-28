@@ -68,13 +68,15 @@ In Claude Code and Claude Desktop, reading files writes their contents directly 
 ---
 
 ## What It Detects
-
+ 
 | Vylor Tool | Replaces | Supported Tools & Patterns |
 |---|---|---|
 | `find_files` | Heavy file reads & dumps | `Read`, `read_file`, `cat`, `view_file`, sequential multi-reads |
 | `request_repo_map` | Directory exploration & trees | `Glob`, `list_dir`, `ls`, `tree`, `find` |
 | `find_code_definition` | Symbol searching & code crawling | `Grep`, `grep_search`, `ripgrep`, regex scans |
-| `mcp__vylor__*` | Measured active Vylor runs | Calculates actual savings achieved with Vylor active |
+
+> [!NOTE]
+> Sessions that already use Vylor MCP tools (`mcp__vylor__*`, `request_repo_map`, etc.) are detected and skipped automatically to prevent double-counting or estimating phantom savings on already optimized runs.
 
 ---
 
@@ -94,15 +96,6 @@ Found 2 session file(s). Parsing...
 | Total Tokens        |            1.03M |         377.1K |  -656.0K | -63.5% |
 +-----------------------------------------------------------------------------+
 
---------------------------- Breakdown by Vylor Tool ---------------------------
-+-----------------------------------------------------------------------------+
-| Vylor Tool              |   Intercepted Turns |  Cost Saved |  Tokens Saved |
-|-------------------------+---------------------+-------------+---------------|
-| find_files              |                  11 |    -$0.1482 |       -369.7K |
-| request_repo_map        |                   4 |    -$0.0563 |       -149.5K |
-| find_code_definition    |                   1 |    -$0.0273 |        -53.8K |
-+-----------------------------------------------------------------------------+
-
 --------------------------- Top Sessions by Savings ---------------------------
 +-----------------------------------------------------------------------------+
 | Session ID              | Turns | Baseline Cost | Cost Saved |  % Cut | Sub-agents |
@@ -111,8 +104,6 @@ Found 2 session file(s). Parsing...
 +-----------------------------------------------------------------------------+
 
 +-----------------------------------------------------------------------------+
-| Direct cache model: 100% avoided file reads | 100% downstream cache reads | |
-| 0% output tokens                                                            |
 | Powered by Vylor MCP -- https://github.com/vylor-ai/vylor-mcp               |
 +-----------------------------------------------------------------------------+
 ```

@@ -58,37 +58,18 @@ class TerminalReportRenderer(IReportRenderer):
             "Total Cost",
             f"${agg.baseline_cost:,.4f}",
             f"${agg.estimated_cost:,.4f}",
-            f"-${agg.saved_cost:,.4f}",
-            f"-{agg.pct_cost_cut:.1f}%",
+            f"${agg.saved_cost:,.4f}",
+            f"{agg.pct_cost_cut:.1f}%",
         )
         table.add_row(
             "Total Tokens",
             _fmt_tokens(agg.baseline_total_tokens),
             _fmt_tokens(agg.estimated_tokens),
-            f"-{_fmt_tokens(agg.total_saved_tokens)}",
-            f"-{agg.pct_tokens_cut:.1f}%",
+            _fmt_tokens(agg.total_saved_tokens),
+            f"{agg.pct_tokens_cut:.1f}%",
         )
         c.print(table)
         c.print()
-
-        if agg.by_tool:
-            c.print(Rule(f"[bold {ACCENT}]Breakdown by Vylor Tool", style=ACCENT))
-            t2 = Table(box=box.SIMPLE_HEAD, header_style="bold white",
-                       border_style="dim", expand=True)
-            t2.add_column("Vylor Tool",        style="bold cyan")
-            t2.add_column("Intercepted Turns", justify="right")
-            t2.add_column("Cost Saved",        justify="right", style="green")
-            t2.add_column("Tokens Saved",      justify="right", style="green")
-
-            for tool_name, info in sorted(agg.by_tool.items(), key=lambda x: -x[1]["saved_cost"]):
-                t2.add_row(
-                    tool_name,
-                    str(info["turns"]),
-                    f"-${info['saved_cost']:,.4f}",
-                    f"-{_fmt_tokens(info['saved_tokens'])}",
-                )
-            c.print(t2)
-            c.print()
 
         if agg.by_model:
             c.print(Rule(f"[bold {ACCENT}]Breakdown by Model", style=ACCENT))
@@ -105,7 +86,7 @@ class TerminalReportRenderer(IReportRenderer):
                     short,
                     str(info["turns"]),
                     f"${info['baseline_cost']:,.4f}",
-                    f"-${info['saved_cost']:,.4f}",
+                    f"${info['saved_cost']:,.4f}",
                 )
             c.print(t3)
             c.print()
@@ -127,15 +108,14 @@ class TerminalReportRenderer(IReportRenderer):
                     (sid if len(sid) <= 26 else f"{sid[:16]}...{sid[-4:]}"),
                     str(sa.turns_analyzed),
                     f"${sa.baseline_cost:,.4f}",
-                    f"-${sa.saved_cost:,.4f}",
-                    f"-{sa.pct_cost_cut:.1f}%",
+                    f"${sa.saved_cost:,.4f}",
+                    f"{sa.pct_cost_cut:.1f}%",
                     str(sa.subagent_turns) if sa.subagent_turns > 0 else "-",
                 )
             c.print(t4)
             c.print()
 
         c.print(Panel(
-            "[dim]Direct cache model: 100% avoided file reads | 100% downstream cache reads | 0% output tokens[/dim]\n"
             f"[dim]Powered by [/dim][bold {ACCENT}]Vylor MCP[/bold {ACCENT}]"
             "[dim] -- https://github.com/vylor-ai/vylor-mcp[/dim]",
             box=box.ROUNDED, border_style=f"dim {ACCENT}", expand=True

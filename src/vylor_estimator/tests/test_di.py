@@ -95,13 +95,14 @@ def test_pricing_calculator_injection_in_parser():
         assert pytest.approx(t.cost, rel=1e-5) == expected
 
 
-def test_pricing_calculator_injection_in_savings_engine():
-    """Verify that ConservativeSavingsEngine uses the injected IPricingCalculator."""
-    stub_pricing = StubPricingCalculator(flat_rate_per_m=200.0)
-    savings_engine = ConservativeSavingsEngine(pricing_calculator=stub_pricing)
+def test_subagent_elimination_savings_engine():
+    """Verify that ConservativeSavingsEngine saves the full cost of subagent turns."""
+    savings_engine = ConservativeSavingsEngine()
 
-    turn = Turn(
-        turn_id="t1",
+    # A main-agent turn (no saving) and a subagent turn (fully saved).
+    # The saved_cost should equal exactly the subagent turn's cost field.
+    t_main = Turn(
+        turn_id="t_main",
         session_id="s1",
         model="claude-sonnet-4.5",
         timestamp=datetime.now(timezone.utc),
@@ -113,21 +114,37 @@ def test_pricing_calculator_injection_in_savings_engine():
         ephemeral_1h_tokens=0,
         reasoning_tokens=0,
         duration_seconds=5.0,
-        tool_calls=[ToolCall(name="list_dir", args={})],
-        cost=2.2,
+        tool_calls=[ToolCall(name="read_file", args={})],
+        cost=0.30,
         is_subagent=False,
     )
-    classified = ClassifiedTurn(
-        turn=turn,
-        vylor_intercept=True,
-        vylor_tool=VylorTool.REPO_MAP,
-        savings_fraction=0.70,
-        file_reads_count=0,
-    )
+    ct_main = ClassifiedTurn(turn=t_main, vylor_intercept=True, vylor_tool=VylorTool.FIND_FILES)
 
-    report = savings_engine.calculate([classified])
-    # 7,000 input tokens saved at 200/M = 1.40 saved cost
-    assert pytest.approx(report.total.saved_cost, rel=1e-5) == 1.40
+    t_sub = Turn(
+        turn_id="t_sub",
+        session_id="s1",
+        model="claude-sonnet-4.5",
+        timestamp=datetime.now(timezone.utc),
+        input_tokens=5_000,
+        output_tokens=500,
+        cache_read_tokens=3_000,
+        cache_write_tokens=1_000,
+        ephemeral_5m_tokens=0,
+        ephemeral_1h_tokens=0,
+        reasoning_tokens=0,
+        duration_seconds=3.0,
+        tool_calls=[ToolCall(name="read_file", args={})],
+        cost=0.15,
+        is_subagent=True,
+    )
+    ct_sub = ClassifiedTurn(turn=t_sub, vylor_intercept=False)
+
+    report = savings_engine.calculate([ct_main, ct_sub])
+    # Only the subagent turn is saved; its full cost is credited
+    assert pytest.approx(report.total.saved_cost, rel=1e-9) == t_sub.cost
+    assert report.turn_savings[0].saved_cost == 0.0   # main agent: no saving
+    assert report.turn_savings[1].saved_cost == t_sub.cost  # subagent: fully saved
+
 
 
 def test_estimator_service_dependency_injection():
@@ -136,7 +153,7 @@ def test_estimator_service_dependency_injection():
     mock_discoverer = MockDiscoverer([FIXTURES / "sample_session.jsonl"])
     parser = ClaudeJsonlParser(pricing_calculator=stub_pricing)
     classifier = PatternTurnClassifier()
-    savings_engine = ConservativeSavingsEngine(pricing_calculator=stub_pricing)
+    savings_engine = ConservativeSavingsEngine()
     renderer_spy = RecordingRenderer()
 
     service = EstimatorService(

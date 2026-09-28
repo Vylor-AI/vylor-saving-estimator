@@ -2,13 +2,9 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, timezone
 
 from vylor_estimator.classifier import ClassifiedTurn
-from vylor_estimator.pricing import (
-    ClaudePricingCalculator,
-    IPricingCalculator,
-)
 
 
 @dataclass
@@ -28,7 +24,6 @@ class TurnSavings:
 class Aggregate:
     """Rolled-up savings metrics for a group of turns."""
     turns_analyzed: int = 0
-    turns_intercepted: int = 0
     subagent_turns: int = 0
 
     # Baseline
@@ -43,9 +38,6 @@ class Aggregate:
     saved_input_tokens: int = 0
     saved_cache_tokens: int = 0        # cache read
     saved_cache_write_tokens: int = 0  # cache creation
-
-    # Per-tool breakdown: {VylorTool: {turns, saved_cost, saved_tokens}}
-    by_tool: dict[str, dict] = field(default_factory=dict)
 
     # Per-model breakdown
     by_model: dict[str, dict] = field(default_factory=dict)
@@ -103,25 +95,19 @@ class ISavingsEngine(ABC):
 
 class ConservativeSavingsEngine(ISavingsEngine):
     """
-    Standard Compounding Cache Savings calculation engine.
+    Subagent-elimination savings engine.
 
-    Chronologically models session context growth:
-    - Turns that perform heavy file reads or searches have their new tokens
-      (input_tokens + cache_write_tokens) reduced by savings_fraction.
-    - Avoided context is tracked as accumulated_avoided_context for the session.
-    - All downstream turns in that session avoid reading that accumulated context
-      from the prompt cache (cache_read_tokens).
+    Vylor MCP replaces background exploration subagents with a single lightweight
+    tool call.  Every subagent turn that existed in the baseline session is therefore
+    an eliminated cost.  The saving for each subagent turn is its **full** cost and
+    all of its tokens (input + output + cache_read + cache_write).
+
+    Main-agent turns are never credited as savings — they represent work Claude
+    still needs to do even with Vylor MCP.
     """
 
-    def __init__(
-        self,
-        pricing_calculator: IPricingCalculator | None = None,
-    ) -> None:
-        self.pricing_calculator = pricing_calculator or ClaudePricingCalculator()
-
-    def _ensure_tool_key(self, agg: Aggregate, tool: str) -> None:
-        if tool not in agg.by_tool:
-            agg.by_tool[tool] = {"turns": 0, "saved_cost": 0.0, "saved_tokens": 0}
+    def __init__(self) -> None:
+        pass
 
     def _ensure_model_key(self, agg: Aggregate, model: str) -> None:
         if model not in agg.by_model:
@@ -152,15 +138,6 @@ class ConservativeSavingsEngine(ISavingsEngine):
             agg.saved_cache_tokens += ts.saved_cache_tokens
             agg.saved_cache_write_tokens += ts.saved_cache_write_tokens
 
-        if ct.vylor_intercept:
-            agg.turns_intercepted += 1
-            if ct.vylor_tool is not None:
-                tool_key = ct.vylor_tool.value
-                self._ensure_tool_key(agg, tool_key)
-                agg.by_tool[tool_key]["turns"] += 1
-                agg.by_tool[tool_key]["saved_cost"] += ts.saved_cost
-                agg.by_tool[tool_key]["saved_tokens"] += ts.total_saved_tokens
-
         model_key = turn.model or "unknown"
         self._ensure_model_key(agg, model_key)
         agg.by_model[model_key]["turns"] += 1
@@ -170,82 +147,59 @@ class ConservativeSavingsEngine(ISavingsEngine):
             agg.by_model[model_key]["saved_tokens"] += ts.total_saved_tokens
 
     def calculate(self, classified_turns: list[ClassifiedTurn]) -> SavingsReport:
-        """Compute the full savings report using session-aware compounding cache math."""
+        """
+        Compute savings by eliminating exploration subagent turns.
+
+        Vylor MCP replaces background exploration subagents with a single lightweight
+        tool call.  Each subagent turn is therefore an eliminated cost; the saving is
+        the **full** cost of that turn plus all of its tokens.
+
+        Main-agent turns produce zero savings — those are the turns Claude still
+        performs even with Vylor MCP.
+
+        Example:
+            Main turn 1   is_subagent=False   cost=$0.02  → no saving
+            Sub  turn 1   is_subagent=True    cost=$0.05  → save $0.05 + all tokens
+            Sub  turn 2   is_subagent=True    cost=$0.03  → save $0.03 + all tokens
+            Main turn 2   is_subagent=False   cost=$0.04  → no saving
+        Total saved = $0.08
+        """
         total = Aggregate()
         by_session: dict[str, Aggregate] = defaultdict(Aggregate)
         by_day: dict[date, Aggregate] = defaultdict(Aggregate)
         turn_savings_list: list[TurnSavings] = []
 
-        # Group turns by session_id to process sessions chronologically
-        turns_by_session: dict[str, list[ClassifiedTurn]] = defaultdict(list)
         for ct in classified_turns:
-            turns_by_session[ct.turn.session_id].append(ct)
+            turn = ct.turn
 
-        for session_cts in turns_by_session.values():
-            streams: dict[bool, list[ClassifiedTurn]] = defaultdict(list)
-            for ct in session_cts:
-                streams[ct.turn.is_subagent].append(ct)
+            if turn.is_subagent:
+                # Full subagent turn is eliminated by Vylor MCP
+                saved_input = turn.input_tokens
+                saved_cache = turn.cache_read_tokens
+                saved_write = turn.cache_write_tokens
+                saved_cost = turn.cost
+            else:
+                # Main-agent turn: no saving
+                saved_input = 0
+                saved_cache = 0
+                saved_write = 0
+                saved_cost = 0.0
 
-            for stream_cts in streams.values():
-                stream_cts.sort(
-                    key=lambda x: x.turn.timestamp or datetime.min.replace(tzinfo=timezone.utc)
-                )
+            ts = TurnSavings(
+                classified=ct,
+                saved_input_tokens=saved_input,
+                saved_cache_tokens=saved_cache,
+                saved_cache_write_tokens=saved_write,
+                saved_cost=saved_cost,
+            )
+            turn_savings_list.append(ts)
 
-                accumulated_avoided_context = 0
+            self._add_to_aggregate(total, ts)
+            self._add_to_aggregate(by_session[turn.session_id], ts)
 
-                for ct in stream_cts:
-                    turn = ct.turn
-
-                    saved_input = 0
-                    saved_cache_read = 0
-
-                    # 1. Avoided cache read accumulated from prior steps
-                    if accumulated_avoided_context > 0 and turn.cache_read_tokens > 0:
-                        saved_cache_read = min(turn.cache_read_tokens, accumulated_avoided_context)
-
-                    # 2. If this turn is intercepted by Vylor:
-                    if ct.vylor_intercept:
-                        new_context = turn.input_tokens + turn.cache_write_tokens
-                        avoided_context = int(new_context * ct.savings_fraction)
-
-                        saved_input = min(turn.input_tokens, int(turn.input_tokens * ct.savings_fraction))
-                        accumulated_avoided_context += avoided_context
-
-                    # Recompute cost delta
-                    # Cache write (ephemeral_5m and ephemeral_1h) is calculated normally
-                    original_cost = self.pricing_calculator.compute_turn_cost(
-                        model=turn.model,
-                        input_tokens=turn.input_tokens,
-                        output_tokens=turn.output_tokens,
-                        cache_read_tokens=turn.cache_read_tokens,
-                        ephemeral_5m_tokens=turn.ephemeral_5m_tokens,
-                        ephemeral_1h_tokens=turn.ephemeral_1h_tokens,
-                    )
-                    reduced_cost = self.pricing_calculator.compute_turn_cost(
-                        model=turn.model,
-                        input_tokens=max(0, turn.input_tokens - saved_input),
-                        output_tokens=turn.output_tokens,
-                        cache_read_tokens=max(0, turn.cache_read_tokens - saved_cache_read),
-                        ephemeral_5m_tokens=turn.ephemeral_5m_tokens,
-                        ephemeral_1h_tokens=turn.ephemeral_1h_tokens,
-                    )
-                    saved_cost = max(0.0, min(original_cost, original_cost - reduced_cost))
-
-                    ts = TurnSavings(
-                        classified=ct,
-                        saved_input_tokens=saved_input,
-                        saved_cache_tokens=saved_cache_read,
-                        saved_cache_write_tokens=0,
-                        saved_cost=saved_cost,
-                    )
-                    turn_savings_list.append(ts)
-
-                    self._add_to_aggregate(total, ts)
-                    self._add_to_aggregate(by_session[turn.session_id], ts)
-
-                    if turn.timestamp:
-                        day = turn.timestamp.astimezone(timezone.utc).date()
-                        self._add_to_aggregate(by_day[day], ts)
+            if turn.timestamp:
+                day = turn.timestamp.astimezone(timezone.utc).date()
+                self._add_to_aggregate(by_day[day], ts)
 
         return SavingsReport(
             total=total,

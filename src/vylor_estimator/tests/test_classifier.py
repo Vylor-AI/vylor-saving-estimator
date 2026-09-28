@@ -96,3 +96,98 @@ def test_claude_code_read_and_glob_recognized(classifier: PatternTurnClassifier)
     ct_glob = classifier.classify_turn(t_glob)
     assert ct_glob.vylor_intercept is True
     assert ct_glob.vylor_tool == VylorTool.REPO_MAP
+
+
+def test_vylor_tools_not_intercepted_in_classify_turn(classifier: PatternTurnClassifier):
+    """Verify that turns already calling Vylor MCP tools are not flagged for interception."""
+    from datetime import datetime, timezone
+    from vylor_estimator.parser import Turn, ToolCall
+
+    t = Turn(
+        turn_id="t_vylor",
+        session_id="s1",
+        model="claude-sonnet-4.5",
+        timestamp=datetime.now(timezone.utc),
+        input_tokens=100,
+        output_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        ephemeral_5m_tokens=0,
+        ephemeral_1h_tokens=0,
+        reasoning_tokens=0,
+        duration_seconds=1.0,
+        tool_calls=[ToolCall(name="mcp__vylor__find_files")],
+        cost=0.01,
+        is_subagent=False,
+    )
+    ct = classifier.classify_turn(t)
+    assert ct.vylor_intercept is False
+
+
+def test_sessions_with_vylor_tools_skipped_entirely(classifier: PatternTurnClassifier):
+    """Verify that sessions containing any Vylor tool calls are completely skipped."""
+    from datetime import datetime, timezone
+    from vylor_estimator.parser import Turn, ToolCall
+
+    # Session 1: purely standard tools (should be kept)
+    t1 = Turn(
+        turn_id="t1",
+        session_id="standard_session",
+        model="claude-sonnet-4.5",
+        timestamp=datetime.now(timezone.utc),
+        input_tokens=1000,
+        output_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        ephemeral_5m_tokens=0,
+        ephemeral_1h_tokens=0,
+        reasoning_tokens=0,
+        duration_seconds=1.0,
+        tool_calls=[ToolCall(name="read_file")],
+        cost=0.01,
+        is_subagent=False,
+    )
+
+    # Session 2: has a Vylor tool call in turn 2 (entire session must be skipped)
+    t2_a = Turn(
+        turn_id="t2_a",
+        session_id="vylor_session",
+        model="claude-sonnet-4.5",
+        timestamp=datetime.now(timezone.utc),
+        input_tokens=1000,
+        output_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        ephemeral_5m_tokens=0,
+        ephemeral_1h_tokens=0,
+        reasoning_tokens=0,
+        duration_seconds=1.0,
+        tool_calls=[ToolCall(name="read_file")],
+        cost=0.01,
+        is_subagent=False,
+    )
+    t2_b = Turn(
+        turn_id="t2_b",
+        session_id="vylor_session",
+        model="claude-sonnet-4.5",
+        timestamp=datetime.now(timezone.utc),
+        input_tokens=500,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        ephemeral_5m_tokens=0,
+        ephemeral_1h_tokens=0,
+        reasoning_tokens=0,
+        duration_seconds=1.0,
+        tool_calls=[ToolCall(name="mcp__vylor__request_repo_map")],
+        cost=0.005,
+        is_subagent=False,
+    )
+
+    classified = classifier.classify([t1, t2_a, t2_b])
+
+    # Only session 1's turn should remain
+    assert len(classified) == 1
+    assert classified[0].turn.session_id == "standard_session"
+    assert "vylor_session" in classifier.skipped_sessions
+
