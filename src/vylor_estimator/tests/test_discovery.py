@@ -1,4 +1,3 @@
-"""test_discovery.py -- Tests for session auto-discovery."""
 from __future__ import annotations
 
 import pytest

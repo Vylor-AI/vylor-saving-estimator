@@ -1,5 +1,3 @@
-"""test_savings.py -- Tests for the savings math engine."""
-
 from pathlib import Path
 import pytest
 
@@ -156,16 +154,41 @@ def test_subagent_turns_are_fully_saved(savings_engine: ConservativeSavingsEngin
     assert ts.saved_cache_write_tokens == sub.cache_write_tokens
 
 
-def test_main_agent_turns_produce_no_saving(savings_engine: ConservativeSavingsEngine):
+def test_main_agent_shell_exec_saves_cache_read_and_output(savings_engine: ConservativeSavingsEngine):
     """
-    Main-agent turns (is_subagent=False) should never produce any saving,
-    regardless of the tools they call or how many file reads they make.
+    Main-agent turns with vylor_intercept=True (shell-exec detected) should
+    save their cache_read_tokens AND output_tokens cost. Input and cache_write
+    are not saved (Claude still does the work, just via Vylor instead).
     """
-    from vylor_estimator.classifier import ClassifiedTurn, VylorTool
+    from vylor_estimator.classifier import ClassifiedTurn
 
     main = _make_turn("main1", is_subagent=False, cost=0.10,
                       input_tokens=5_000, cache_read_tokens=3_000, cache_write_tokens=1_000)
-    ct = ClassifiedTurn(turn=main, vylor_intercept=True, vylor_tool=VylorTool.FIND_FILES)
+    ct = ClassifiedTurn(turn=main, vylor_intercept=True)
+
+    report = savings_engine.calculate([ct])
+    ts = report.turn_savings[0]
+
+    # cache_read + output tokens are saved; input and cache_write are not
+    assert ts.saved_cache_tokens == 3_000
+    assert ts.saved_output_tokens == main.output_tokens
+    assert ts.saved_input_tokens == 0
+    assert ts.saved_cache_write_tokens == 0
+    # Saved cost covers cache_read + output pricing
+    assert ts.saved_cost > 0
+    assert ts.saved_cost < main.cost   # still less than full turn cost
+
+
+def test_main_agent_no_intercept_saves_nothing(savings_engine: ConservativeSavingsEngine):
+    """
+    Main-agent turns with vylor_intercept=False (text-only or unrecognised tool)
+    should produce zero savings.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn
+
+    main = _make_turn("main1", is_subagent=False, cost=0.10,
+                      input_tokens=5_000, cache_read_tokens=3_000, cache_write_tokens=1_000)
+    ct = ClassifiedTurn(turn=main, vylor_intercept=False)
 
     report = savings_engine.calculate([ct])
     ts = report.turn_savings[0]
@@ -217,4 +240,6 @@ def test_subagent_token_totals_accumulate(savings_engine: ConservativeSavingsEng
     assert report.total.saved_input_tokens == 3_000
     assert report.total.saved_cache_tokens == 1_300
     assert report.total.saved_cache_write_tokens == 500
-    assert report.total.total_saved_tokens == 4_800
+    # output_tokens are now also saved for subagent turns (sub1=200, sub2=200)
+    assert report.total.saved_output_tokens == 400
+    assert report.total.total_saved_tokens == 5_200  # 3000 + 400 + 1300 + 500

@@ -4,7 +4,6 @@ from vylor_estimator.classifier import (
     ClassifiedTurn,
     ITurnClassifier,
     PatternTurnClassifier,
-    VylorTool,
 )
 from vylor_estimator.discovery import (
     ClaudeSessionDiscoverer,
@@ -48,7 +47,6 @@ __all__ = [
     "ITurnClassifier",
     "PatternTurnClassifier",
     "ClassifiedTurn",
-    "VylorTool",
     "IPricingCalculator",
     "ClaudePricingCalculator",
     "ISavingsEngine",

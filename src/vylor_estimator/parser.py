@@ -127,7 +127,6 @@ class ClaudeJsonlParser(ISessionParser):
             except OSError:
                 continue
 
-        # Resolve sub-agent status
         for msg_id, entry in messages_map.items():
             parent_uuid = entry.get("parent_uuid")
             if parent_uuid and parent_uuid in events_by_uuid:
@@ -135,7 +134,6 @@ class ClaudeJsonlParser(ISessionParser):
                 if parent_event.get("type") in ("tool_result", "tool_use"):
                     entry["is_subagent"] = True
 
-        # Second pass: build Turn objects
         turns: list[Turn] = []
         for msg_id in message_order:
             entry = messages_map[msg_id]

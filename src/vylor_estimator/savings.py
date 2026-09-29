@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from datetime import date, timezone
 
 from vylor_estimator.classifier import ClassifiedTurn
+from vylor_estimator.pricing import (
+    ClaudePricingCalculator,
+    IPricingCalculator,
+)
 
 
 @dataclass
@@ -12,12 +16,18 @@ class TurnSavings:
     classified: ClassifiedTurn
     saved_input_tokens: int
     saved_cache_tokens: int            # avoided prompt cache read tokens
+    saved_output_tokens: int = 0       # avoided completion + reasoning tokens
     saved_cache_write_tokens: int = 0  # avoided cache creation tokens
     saved_cost: float = 0.0
 
     @property
     def total_saved_tokens(self) -> int:
-        return self.saved_input_tokens + self.saved_cache_tokens + self.saved_cache_write_tokens
+        return (
+            self.saved_input_tokens
+            + self.saved_cache_tokens
+            + self.saved_output_tokens
+            + self.saved_cache_write_tokens
+        )
 
 
 @dataclass
@@ -36,6 +46,7 @@ class Aggregate:
     # Savings
     saved_cost: float = 0.0
     saved_input_tokens: int = 0
+    saved_output_tokens: int = 0       # completion + reasoning tokens
     saved_cache_tokens: int = 0        # cache read
     saved_cache_write_tokens: int = 0  # cache creation
 
@@ -62,7 +73,12 @@ class Aggregate:
 
     @property
     def total_saved_tokens(self) -> int:
-        return self.saved_input_tokens + self.saved_cache_tokens + self.saved_cache_write_tokens
+        return (
+            self.saved_input_tokens
+            + self.saved_output_tokens
+            + self.saved_cache_tokens
+            + self.saved_cache_write_tokens
+        )
 
     @property
     def pct_cost_cut(self) -> float:
@@ -95,19 +111,22 @@ class ISavingsEngine(ABC):
 
 class ConservativeSavingsEngine(ISavingsEngine):
     """
-    Subagent-elimination savings engine.
+    Two-tier savings engine.
 
-    Vylor MCP replaces background exploration subagents with a single lightweight
-    tool call.  Every subagent turn that existed in the baseline session is therefore
-    an eliminated cost.  The saving for each subagent turn is its **full** cost and
-    all of its tokens (input + output + cache_read + cache_write).
+    Tier 1 — Subagent elimination (is_subagent=True):
+      Vylor MCP replaces the entire background exploration agent with a single
+      lightweight tool call.  The saving is the full cost of the subagent turn
+      plus all of its tokens.
 
-    Main-agent turns are never credited as savings — they represent work Claude
-    still needs to do even with Vylor MCP.
+    Tier 2 — Shell-exec cache savings (vylor_intercept=True, main agent):
+      Main-agent turns that call shell/glob/grep/file-read tools generate
+      cache_read_tokens on every subsequent turn.  When Vylor intercepts
+      these calls, those cache re-reads never happen.  The saving is exactly
+      the cache_read_tokens cost of the intercepted turn.
     """
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, pricing_calculator: IPricingCalculator | None = None) -> None:
+        self.pricing_calculator = pricing_calculator or ClaudePricingCalculator()
 
     def _ensure_model_key(self, agg: Aggregate, model: str) -> None:
         if model not in agg.by_model:
@@ -135,6 +154,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
         if ts.saved_cost > 0 or ts.total_saved_tokens > 0:
             agg.saved_cost += ts.saved_cost
             agg.saved_input_tokens += ts.saved_input_tokens
+            agg.saved_output_tokens += ts.saved_output_tokens
             agg.saved_cache_tokens += ts.saved_cache_tokens
             agg.saved_cache_write_tokens += ts.saved_cache_write_tokens
 
@@ -148,21 +168,22 @@ class ConservativeSavingsEngine(ISavingsEngine):
 
     def calculate(self, classified_turns: list[ClassifiedTurn]) -> SavingsReport:
         """
-        Compute savings by eliminating exploration subagent turns.
+        Two-tier savings calculation.
 
-        Vylor MCP replaces background exploration subagents with a single lightweight
-        tool call.  Each subagent turn is therefore an eliminated cost; the saving is
-        the **full** cost of that turn plus all of its tokens.
+        Tier 1 — Subagent elimination:
+            Every turn where is_subagent=True is fully eliminated by Vylor MCP.
+            Saving = full cost + all tokens of that turn.
 
-        Main-agent turns produce zero savings — those are the turns Claude still
-        performs even with Vylor MCP.
+        Tier 2 — Shell-exec cache savings:
+            Main-agent turns with vylor_intercept=True called a shell/glob/grep/
+            file-read tool.  Vylor intercepts that call; the cache_read_tokens
+            those tools would have generated on all later turns are saved.
+            Saving = cache_read_tokens cost only (input/output unchanged).
 
         Example:
-            Main turn 1   is_subagent=False   cost=$0.02  → no saving
-            Sub  turn 1   is_subagent=True    cost=$0.05  → save $0.05 + all tokens
-            Sub  turn 2   is_subagent=True    cost=$0.03  → save $0.03 + all tokens
-            Main turn 2   is_subagent=False   cost=$0.04  → no saving
-        Total saved = $0.08
+            Main turn 1   vylor_intercept=True   cache_read=10k  → save $cache_read cost
+            Sub  turn 1   is_subagent=True        cost=$0.05      → save $0.05 + all tokens
+            Main turn 2   vylor_intercept=False   (text only)     → $0 saved
         """
         total = Aggregate()
         by_session: dict[str, Aggregate] = defaultdict(Aggregate)
@@ -173,21 +194,40 @@ class ConservativeSavingsEngine(ISavingsEngine):
             turn = ct.turn
 
             if turn.is_subagent:
-                # Full subagent turn is eliminated by Vylor MCP
+                # Tier 1: full subagent turn eliminated
                 saved_input = turn.input_tokens
+                saved_output = turn.output_tokens
                 saved_cache = turn.cache_read_tokens
                 saved_write = turn.cache_write_tokens
-                saved_cost = turn.cost
-            else:
-                # Main-agent turn: no saving
+                saved_cost  = turn.cost
+
+            elif ct.vylor_intercept:
+                # Tier 2: main-agent shell-exec turn — save cache_read + output cost
+                # The Bash/Glob/Grep call is replaced by a concise Vylor tool call;
+                # all output tokens (including reasoning) from this turn are gone.
                 saved_input = 0
+                saved_output = turn.output_tokens
+                saved_cache = turn.cache_read_tokens
+                saved_write = 0
+                saved_cost  = self.pricing_calculator.compute_turn_cost(
+                    model=turn.model,
+                    input_tokens=0,
+                    output_tokens=turn.output_tokens,
+                    cache_read_tokens=turn.cache_read_tokens,
+                )
+
+            else:
+                # No saving
+                saved_input = 0
+                saved_output = 0
                 saved_cache = 0
                 saved_write = 0
-                saved_cost = 0.0
+                saved_cost  = 0.0
 
             ts = TurnSavings(
                 classified=ct,
                 saved_input_tokens=saved_input,
+                saved_output_tokens=saved_output,
                 saved_cache_tokens=saved_cache,
                 saved_cache_write_tokens=saved_write,
                 saved_cost=saved_cost,

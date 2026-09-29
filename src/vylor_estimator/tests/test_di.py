@@ -1,4 +1,3 @@
-"""test_di.py -- Tests for OOP architecture and Dependency Injection."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -8,7 +7,6 @@ import pytest
 from vylor_estimator.classifier import (
     ClassifiedTurn,
     PatternTurnClassifier,
-    VylorTool,
 )
 from vylor_estimator.discovery import (
     ClaudeSessionDiscoverer,
@@ -118,7 +116,7 @@ def test_subagent_elimination_savings_engine():
         cost=0.30,
         is_subagent=False,
     )
-    ct_main = ClassifiedTurn(turn=t_main, vylor_intercept=True, vylor_tool=VylorTool.FIND_FILES)
+    ct_main = ClassifiedTurn(turn=t_main, vylor_intercept=True)
 
     t_sub = Turn(
         turn_id="t_sub",
@@ -140,9 +138,11 @@ def test_subagent_elimination_savings_engine():
     ct_sub = ClassifiedTurn(turn=t_sub, vylor_intercept=False)
 
     report = savings_engine.calculate([ct_main, ct_sub])
-    # Only the subagent turn is saved; its full cost is credited
-    assert pytest.approx(report.total.saved_cost, rel=1e-9) == t_sub.cost
-    assert report.turn_savings[0].saved_cost == 0.0   # main agent: no saving
+    # Subagent turn is fully saved; main-agent turn with vylor_intercept=True
+    # also saves its output+cache_read cost
+    assert report.total.saved_cost > t_sub.cost   # subagent + shell-exec output
+    assert report.total.saved_cost <= t_sub.cost + t_main.cost  # but not more than both
+    assert report.turn_savings[0].saved_cost > 0.0   # main agent shell-exec: saves output cost
     assert report.turn_savings[1].saved_cost == t_sub.cost  # subagent: fully saved
 
 
@@ -153,7 +153,7 @@ def test_estimator_service_dependency_injection():
     mock_discoverer = MockDiscoverer([FIXTURES / "sample_session.jsonl"])
     parser = ClaudeJsonlParser(pricing_calculator=stub_pricing)
     classifier = PatternTurnClassifier()
-    savings_engine = ConservativeSavingsEngine()
+    savings_engine = ConservativeSavingsEngine(pricing_calculator=stub_pricing)
     renderer_spy = RecordingRenderer()
 
     service = EstimatorService(
