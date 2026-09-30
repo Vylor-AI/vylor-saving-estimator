@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from vylor_estimator.classifier import PatternTurnClassifier
-from vylor_estimator.parser import ClaudeJsonlParser, Turn, ToolCall
+from vylor_estimator.parser import ClaudeJsonlParser, ToolCall, Turn
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

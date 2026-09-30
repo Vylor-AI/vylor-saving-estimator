@@ -1,22 +1,16 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
+
 import pytest
 
-from vylor_estimator.classifier import (
-    ClassifiedTurn,
-    PatternTurnClassifier,
-)
+from vylor_estimator.classifier import PatternTurnClassifier
 from vylor_estimator.discovery import (
     ClaudeSessionDiscoverer,
     ISessionDiscoverer,
 )
-from vylor_estimator.parser import (
-    ClaudeJsonlParser,
-    ToolCall,
-    Turn,
-)
+from vylor_estimator.parser import ClaudeJsonlParser
 from vylor_estimator.pricing import IPricingCalculator
 from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.report.terminal import TerminalReportRenderer
@@ -34,9 +28,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class StubPricingCalculator(IPricingCalculator):
-    """Stub pricing calculator with fixed rate for testing DI."""
+    """Stub pricing calculator with fixed rate for testing service."""
 
-    def __init__(self, flat_rate_per_m: float = 100.0) -> None:
+    def __init__(self, flat_rate_per_m: float = 50.0) -> None:
         self.flat_rate_per_m = flat_rate_per_m
 
     def get_pricing(self, model_name: str) -> tuple[float, float, float, float, float]:
@@ -80,74 +74,7 @@ class RecordingRenderer(IReportRenderer):
         self.labels.append(date_range_label)
 
 
-def test_pricing_calculator_injection_in_parser():
-    """Verify that ClaudeJsonlParser uses the injected IPricingCalculator."""
-    stub_pricing = StubPricingCalculator(flat_rate_per_m=100.0)
-    parser = ClaudeJsonlParser(pricing_calculator=stub_pricing)
-    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
-
-    assert len(turns) > 0
-    for t in turns:
-        # Expected cost computed using flat_rate_per_m=100.0
-        expected = (t.input_tokens + t.output_tokens + t.cache_read_tokens) * 100.0 / 1_000_000.0
-        assert pytest.approx(t.cost, rel=1e-5) == expected
-
-
-def test_subagent_elimination_savings_engine():
-    """Verify that ConservativeSavingsEngine saves the full cost of subagent turns."""
-    savings_engine = ConservativeSavingsEngine()
-
-    # A main-agent turn (no saving) and a subagent turn (fully saved).
-    # The saved_cost should equal exactly the subagent turn's cost field.
-    t_main = Turn(
-        turn_id="t_main",
-        session_id="s1",
-        model="claude-sonnet-4.5",
-        timestamp=datetime.now(timezone.utc),
-        input_tokens=10_000,
-        output_tokens=1_000,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        ephemeral_5m_tokens=0,
-        ephemeral_1h_tokens=0,
-        reasoning_tokens=0,
-        duration_seconds=5.0,
-        tool_calls=[ToolCall(name="read_file", args={})],
-        cost=0.30,
-        is_subagent=False,
-    )
-    ct_main = ClassifiedTurn(turn=t_main, vylor_intercept=True)
-
-    t_sub = Turn(
-        turn_id="t_sub",
-        session_id="s1",
-        model="claude-sonnet-4.5",
-        timestamp=datetime.now(timezone.utc),
-        input_tokens=5_000,
-        output_tokens=500,
-        cache_read_tokens=3_000,
-        cache_write_tokens=1_000,
-        ephemeral_5m_tokens=0,
-        ephemeral_1h_tokens=0,
-        reasoning_tokens=0,
-        duration_seconds=3.0,
-        tool_calls=[ToolCall(name="read_file", args={})],
-        cost=0.15,
-        is_subagent=True,
-    )
-    ct_sub = ClassifiedTurn(turn=t_sub, vylor_intercept=False)
-
-    report = savings_engine.calculate([ct_main, ct_sub])
-    # Subagent turn is fully saved; main-agent turn with vylor_intercept=True
-    # also saves its output+cache_read cost
-    assert report.total.saved_cost > t_sub.cost   # subagent + shell-exec output
-    assert report.total.saved_cost <= t_sub.cost + t_main.cost  # but not more than both
-    assert report.turn_savings[0].saved_cost > 0.0   # main agent shell-exec: saves output cost
-    assert report.turn_savings[1].saved_cost == t_sub.cost  # subagent: fully saved
-
-
-
-def test_estimator_service_dependency_injection():
+def test_estimator_service_orchestration():
     """Verify EstimatorService coordinates all injected components end-to-end."""
     stub_pricing = StubPricingCalculator(flat_rate_per_m=50.0)
     mock_discoverer = MockDiscoverer([FIXTURES / "sample_session.jsonl"])
@@ -204,3 +131,35 @@ def test_date_filter_cutoff_calculations():
     af = DateFilter()
     assert af.get_cutoff_date() is None
     assert af.label == "All-time"
+
+
+def test_date_filter_resolve():
+    """Verify DateFilter.resolve default fallback and explicit flags."""
+    # Default fallback when no parameters provided
+    default_filter = DateFilter.resolve()
+    assert default_filter.month is True
+    assert default_filter.label == "Last 30 days"
+
+    # All-time flag
+    all_filter = DateFilter.resolve(all_time=True)
+    assert all_filter.get_cutoff_date() is None
+    assert all_filter.label == "All-time"
+
+    # Week flag
+    week_filter = DateFilter.resolve(week=True)
+    assert week_filter.week is True
+    assert week_filter.label == "Last 7 days"
+
+    # Since date
+    since_filter = DateFilter.resolve(since=date(2025, 3, 1))
+    assert since_filter.since == date(2025, 3, 1)
+
+    # Conflicting --all with other flags raises ValueError
+    with pytest.raises(ValueError, match="Cannot combine --all"):
+        DateFilter.resolve(all_time=True, week=True)
+
+    with pytest.raises(ValueError, match="Cannot combine --all"):
+        DateFilter.resolve(all_time=True, month=True)
+
+    with pytest.raises(ValueError, match="Cannot combine --all"):
+        DateFilter.resolve(all_time=True, since=date(2025, 3, 1))

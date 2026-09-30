@@ -1,0 +1,107 @@
+name: Build & Release Binary
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: vylor-estimate.exe
+            binary_path: dist/vylor-estimate.exe
+          - os: macos-latest
+            artifact_name: vylor-estimate-macos
+            binary_path: dist/vylor-estimate
+          - os: ubuntu-latest
+            artifact_name: vylor-estimate-linux
+            binary_path: dist/vylor-estimate
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and PyInstaller
+        run: pip install pyinstaller .
+
+      - name: Build binary
+        run: pyinstaller vylor-estimate.spec
+
+      - name: Rename binary (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x dist/vylor-estimate
+          mv dist/vylor-estimate ${{ matrix.artifact_name }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Move-Item dist\vylor-estimate.exe ${{ matrix.artifact_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release on vylor-estimate-binaries
+        env:
+          GH_TOKEN: ${{ secrets.BINARIES_REPO_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+
+          cat << 'EOF' > release_notes.md
+          ## Install
+
+          **macOS / Linux:**
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/Vylor-AI/vylor-estimate-binaries/main/install.sh | sh
+          ```
+
+          **Windows (PowerShell):**
+          ```powershell
+          irm https://raw.githubusercontent.com/Vylor-AI/vylor-estimate-binaries/main/install.ps1 | iex
+          ```
+
+          Or download the binary for your platform directly from the assets below.
+          EOF
+
+          if gh release view "$TAG" --repo Vylor-AI/vylor-estimate-binaries >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating assets..."
+            gh release upload "$TAG" vylor-estimate.exe vylor-estimate-macos vylor-estimate-linux \
+              --repo Vylor-AI/vylor-estimate-binaries \
+              --clobber
+          else
+            gh release create "$TAG" \
+              --repo Vylor-AI/vylor-estimate-binaries \
+              --title "vylor-estimate $TAG" \
+              --notes-file release_notes.md \
+              vylor-estimate.exe \
+              vylor-estimate-macos \
+              vylor-estimate-linux
+          fi

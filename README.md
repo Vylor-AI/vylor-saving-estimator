@@ -39,12 +39,13 @@ pipx install vylor-savings-estimator
 ## Usage
 
 ```bash
-# Auto-discover all Claude sessions, all-time (zero config)
+# Auto-discover all Claude sessions (defaults to last 30 days)
 vylor-estimate
 
 # Date filtering
 vylor-estimate --week          # last 7 days only
 vylor-estimate --month         # last 30 days only
+vylor-estimate --all           # all-time (disable default 30-day filter)
 vylor-estimate --since 2025-09-01
 
 # Explicit path (single file or custom directory)

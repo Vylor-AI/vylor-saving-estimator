@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import pytest
 
 from vylor_estimator.classifier import PatternTurnClassifier
@@ -114,7 +115,8 @@ def _make_turn(
 ):
     """Helper: build a minimal Turn for unit tests."""
     from datetime import datetime, timezone
-    from vylor_estimator.parser import Turn, ToolCall
+
+    from vylor_estimator.parser import ToolCall, Turn
     return Turn(
         turn_id=turn_id,
         session_id=session_id,

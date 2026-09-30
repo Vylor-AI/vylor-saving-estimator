@@ -38,6 +38,26 @@ class DateFilter:
     month: bool = False
     since: date | None = None
 
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        week: bool = False,
+        month: bool = False,
+        since: date | None = None,
+        all_time: bool = False,
+    ) -> DateFilter:
+        """Resolve date options into a DateFilter, defaulting to last 30 days."""
+        if all_time and (week or month or since is not None):
+            raise ValueError("Cannot combine --all with other date filter options.")
+        if all_time:
+            return cls()
+        if week:
+            return cls(week=True)
+        if since is not None:
+            return cls(since=since)
+        return cls(month=True)
+
     def get_cutoff_date(self) -> date | None:
         today = date.today()
         if self.week:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from vylor_estimator.parser import ClaudeJsonlParser
+from vylor_estimator.pricing import IPricingCalculator
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -97,8 +99,42 @@ def test_subagent_stitching(tmp_path, parser: ClaudeJsonlParser):
     assert turns[1].session_id == parent_sess
 
     # Subagent flag
-    p_turn = [t for t in turns if t.turn_id == "p_msg_1"][0]
-    s_turn = [t for t in turns if t.turn_id == "s_msg_1"][0]
+    p_turn = next(t for t in turns if t.turn_id == "p_msg_1")
+    s_turn = next(t for t in turns if t.turn_id == "s_msg_1")
 
     assert p_turn.is_subagent is False
     assert s_turn.is_subagent is True
+
+
+class StubPricingCalculator(IPricingCalculator):
+    """Stub pricing calculator with fixed rate for testing injection."""
+
+    def __init__(self, flat_rate_per_m: float = 100.0) -> None:
+        self.flat_rate_per_m = flat_rate_per_m
+
+    def get_pricing(self, model_name: str) -> tuple[float, float, float, float, float]:
+        return (self.flat_rate_per_m, 0.0, 0.0, self.flat_rate_per_m, self.flat_rate_per_m)
+
+    def compute_turn_cost(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        ephemeral_5m_tokens: int = 0,
+        ephemeral_1h_tokens: int = 0,
+    ) -> float:
+        return (input_tokens + output_tokens + cache_read_tokens) * self.flat_rate_per_m / 1_000_000.0
+
+
+def test_pricing_calculator_injection_in_parser():
+    """Verify that ClaudeJsonlParser uses the injected IPricingCalculator."""
+    stub_pricing = StubPricingCalculator(flat_rate_per_m=100.0)
+    parser = ClaudeJsonlParser(pricing_calculator=stub_pricing)
+    turns = parser.parse([FIXTURES / "sample_session.jsonl"])
+
+    assert len(turns) > 0
+    for t in turns:
+        expected = (t.input_tokens + t.output_tokens + t.cache_read_tokens) * 100.0 / 1_000_000.0
+        assert pytest.approx(t.cost, rel=1e-5) == expected
+
