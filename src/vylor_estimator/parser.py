@@ -97,7 +97,7 @@ class ClaudeJsonlParser(ISessionParser):
                                 messages_map[msg_id] = {
                                     "contents": [],
                                     "tool_calls_raw": [],
-                                    "usage": msg.get("usage", {}),
+                                    "usage": msg.get("usage") or {},
                                     "model": msg.get("model", ""),
                                     "parent_uuid": data.get("parentUuid"),
                                     "first_timestamp": data.get("timestamp"),
@@ -110,7 +110,7 @@ class ClaudeJsonlParser(ISessionParser):
                             entry = messages_map[msg_id]
                             entry["last_timestamp"] = data.get("timestamp")
                             if msg.get("usage"):
-                                entry["usage"] = msg.get("usage")
+                                entry["usage"] = msg.get("usage") or {}
                             if not entry["model"] and msg.get("model"):
                                 entry["model"] = msg.get("model", "")
 
@@ -135,66 +135,74 @@ class ClaudeJsonlParser(ISessionParser):
                     entry["is_subagent"] = True
 
         turns: list[Turn] = []
+        skipped = 0
         for msg_id in message_order:
             entry = messages_map[msg_id]
+            try:
+                tool_calls = [
+                    ToolCall(name=tc["name"], args=tc["args"])
+                    for tc in entry["tool_calls_raw"]
+                ]
 
-            tool_calls = [
-                ToolCall(name=tc["name"], args=tc["args"])
-                for tc in entry["tool_calls_raw"]
-            ]
+                end_dt = _parse_iso(entry["last_timestamp"])
+                parent_uuid = entry.get("parent_uuid")
+                parent_dt = None
+                if parent_uuid and parent_uuid in events_by_uuid:
+                    parent_dt = _parse_iso(events_by_uuid[parent_uuid].get("timestamp"))
 
-            end_dt = _parse_iso(entry["last_timestamp"])
-            parent_uuid = entry.get("parent_uuid")
-            parent_dt = None
-            if parent_uuid and parent_uuid in events_by_uuid:
-                parent_dt = _parse_iso(events_by_uuid[parent_uuid].get("timestamp"))
+                duration: float | None = None
+                if end_dt and parent_dt and end_dt >= parent_dt:
+                    duration = (end_dt - parent_dt).total_seconds()
+                elif end_dt and entry["first_timestamp"]:
+                    start_dt = _parse_iso(entry["first_timestamp"])
+                    if start_dt and end_dt >= start_dt:
+                        duration = (end_dt - start_dt).total_seconds()
 
-            duration: float | None = None
-            if end_dt and parent_dt and end_dt >= parent_dt:
-                duration = (end_dt - parent_dt).total_seconds()
-            elif end_dt and entry["first_timestamp"]:
-                start_dt = _parse_iso(entry["first_timestamp"])
-                if start_dt and end_dt >= start_dt:
-                    duration = (end_dt - start_dt).total_seconds()
+                usage = entry["usage"] or {}
+                model = entry["model"] or "unknown"
+                cache_creation = usage.get("cache_creation") or {}
 
-            usage = entry["usage"]
-            model = entry["model"] or "unknown"
-            cache_creation = usage.get("cache_creation", {})
+                e_5m = cache_creation.get("ephemeral_5m_input_tokens", 0) or 0
+                e_1h = cache_creation.get("ephemeral_1h_input_tokens", 0) or 0
+                cc_total = usage.get("cache_creation_input_tokens", e_5m + e_1h) or 0
+                input_tokens = usage.get("input_tokens", 0) or 0
+                output_tokens = usage.get("output_tokens", 0) or 0
+                cache_read = usage.get("cache_read_input_tokens", 0) or 0
+                reasoning = (usage.get("output_tokens_details") or {}).get("thinking_tokens", 0) or 0
 
-            e_5m = cache_creation.get("ephemeral_5m_input_tokens", 0) or 0
-            e_1h = cache_creation.get("ephemeral_1h_input_tokens", 0) or 0
-            cc_total = usage.get("cache_creation_input_tokens", e_5m + e_1h) or 0
-            input_tokens = usage.get("input_tokens", 0) or 0
-            output_tokens = usage.get("output_tokens", 0) or 0
-            cache_read = usage.get("cache_read_input_tokens", 0) or 0
-            reasoning = usage.get("output_tokens_details", {}).get("thinking_tokens", 0) or 0
+                cost = self.pricing_calculator.compute_turn_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    ephemeral_5m_tokens=e_5m,
+                    ephemeral_1h_tokens=e_1h,
+                )
 
-            cost = self.pricing_calculator.compute_turn_cost(
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                ephemeral_5m_tokens=e_5m,
-                ephemeral_1h_tokens=e_1h,
-            )
+                turns.append(Turn(
+                    turn_id=msg_id,
+                    session_id=entry["session_id"],
+                    model=model,
+                    timestamp=end_dt,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cc_total,
+                    ephemeral_5m_tokens=e_5m,
+                    ephemeral_1h_tokens=e_1h,
+                    reasoning_tokens=reasoning,
+                    duration_seconds=duration,
+                    tool_calls=tool_calls,
+                    cost=cost,
+                    is_subagent=entry["is_subagent"],
+                ))
+            except Exception:
+                skipped += 1
+                continue
 
-            turns.append(Turn(
-                turn_id=msg_id,
-                session_id=entry["session_id"],
-                model=model,
-                timestamp=end_dt,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cc_total,
-                ephemeral_5m_tokens=e_5m,
-                ephemeral_1h_tokens=e_1h,
-                reasoning_tokens=reasoning,
-                duration_seconds=duration,
-                tool_calls=tool_calls,
-                cost=cost,
-                is_subagent=entry["is_subagent"],
-            ))
+        if skipped:
+            import sys
+            print(f"[dim]Skipped {skipped} malformed turn(s).[/dim]", file=sys.stderr)
 
         turns.sort(key=lambda t: t.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return turns

@@ -138,3 +138,44 @@ def test_pricing_calculator_injection_in_parser():
         expected = (t.input_tokens + t.output_tokens + t.cache_read_tokens) * 100.0 / 1_000_000.0
         assert pytest.approx(t.cost, rel=1e-5) == expected
 
+
+def test_corrupted_session_null_usage(tmp_path):
+    """Parser must not crash when 'usage' is null in a session file (corrupted/partial session)."""
+    import json
+
+    session_file = tmp_path / "corrupt.jsonl"
+    good_msg = {
+        "type": "assistant",
+        "uuid": "good_1",
+        "timestamp": "2026-01-01T10:00:00Z",
+        "message": {
+            "id": "good_1",
+            "model": "claude-sonnet-4.5",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+            "content": [{"type": "text", "text": "hello"}],
+        },
+    }
+    corrupted_msg = {
+        "type": "assistant",
+        "uuid": "bad_1",
+        "timestamp": "2026-01-01T10:01:00Z",
+        "message": {
+            "id": "bad_1",
+            "model": "claude-sonnet-4.5",
+            "usage": None,          # null usage — the bug case
+            "content": [],
+        },
+    }
+    session_file.write_text(
+        json.dumps(good_msg) + "\n" + json.dumps(corrupted_msg) + "\n",
+        encoding="utf-8",
+    )
+
+    parser = ClaudeJsonlParser()
+    # Must not raise — should parse at least the good turn
+    turns = parser.parse([session_file])
+    assert len(turns) >= 1
+    good_turn = next((t for t in turns if t.turn_id == "good_1"), None)
+    assert good_turn is not None
+    assert good_turn.input_tokens == 100
+
