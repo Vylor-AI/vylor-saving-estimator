@@ -1,14 +1,27 @@
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timezone
 
-from vylor_estimator.classifier import ClassifiedTurn
+from vylor_estimator.classifier import SOURCE_SUBAGENTS, ClassifiedTurn
+from vylor_estimator.parser import Turn
 from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
 )
+
+MAX_TURN_SECONDS = 600.0
+
+SOURCE_OTHER = "Other"
+
+
+def turn_seconds(turn: Turn) -> float:
+    """Duration of a turn in seconds: None counts as 0 and the value is clamped."""
+    if turn.duration_seconds is None:
+        return 0.0
+    return min(max(turn.duration_seconds, 0.0), MAX_TURN_SECONDS)
 
 
 @dataclass
@@ -19,6 +32,7 @@ class TurnSavings:
     saved_output_tokens: int = 0       # avoided completion + reasoning tokens
     saved_cache_write_tokens: int = 0  # avoided cache creation tokens
     saved_cost: float = 0.0
+    saved_seconds: float = 0.0         # avoided agent time (wasted turn duration)
 
     @property
     def total_saved_tokens(self) -> int:
@@ -50,8 +64,15 @@ class Aggregate:
     saved_cache_tokens: int = 0        # cache read
     saved_cache_write_tokens: int = 0  # cache creation
 
+    # Time (agent-time: sum of turn durations; parallel sub-agents can overlap)
+    baseline_seconds: float = 0.0
+    saved_seconds: float = 0.0
+
     # Per-model breakdown
     by_model: dict[str, dict] = field(default_factory=dict)
+
+    # Waste attribution: source -> {turns, cost, tokens, seconds}
+    by_source: dict[str, dict] = field(default_factory=dict)
 
     @property
     def estimated_cost(self) -> float:
@@ -92,6 +113,12 @@ class Aggregate:
         if total == 0:
             return 0.0
         return round((self.total_saved_tokens / total) * 100, 1)
+
+    @property
+    def pct_time_cut(self) -> float:
+        if self.baseline_seconds == 0:
+            return 0.0
+        return round((self.saved_seconds / self.baseline_seconds) * 100, 1)
 
 
 @dataclass
@@ -150,13 +177,25 @@ class ConservativeSavingsEngine(ISavingsEngine):
         agg.baseline_output_tokens += turn.output_tokens
         agg.baseline_cache_read_tokens += turn.cache_read_tokens
         agg.baseline_cache_write_tokens += turn.cache_write_tokens
+        agg.baseline_seconds += turn_seconds(turn)
 
-        if ts.saved_cost > 0 or ts.total_saved_tokens > 0:
+        is_waste = ts.saved_cost > 0 or ts.total_saved_tokens > 0
+        if is_waste:
             agg.saved_cost += ts.saved_cost
             agg.saved_input_tokens += ts.saved_input_tokens
             agg.saved_output_tokens += ts.saved_output_tokens
             agg.saved_cache_tokens += ts.saved_cache_tokens
             agg.saved_cache_write_tokens += ts.saved_cache_write_tokens
+            agg.saved_seconds += ts.saved_seconds
+
+            source = ct.source or (SOURCE_SUBAGENTS if turn.is_subagent else SOURCE_OTHER)
+            bucket = agg.by_source.setdefault(
+                source, {"turns": 0, "cost": 0.0, "tokens": 0, "seconds": 0.0}
+            )
+            bucket["turns"] += 1
+            bucket["cost"] += ts.saved_cost
+            bucket["tokens"] += ts.total_saved_tokens
+            bucket["seconds"] += ts.saved_seconds
 
         model_key = turn.model or "unknown"
         self._ensure_model_key(agg, model_key)
@@ -224,6 +263,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
                 saved_write = 0
                 saved_cost  = 0.0
 
+            is_waste = turn.is_subagent or ct.vylor_intercept
             ts = TurnSavings(
                 classified=ct,
                 saved_input_tokens=saved_input,
@@ -231,6 +271,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
                 saved_cache_tokens=saved_cache,
                 saved_cache_write_tokens=saved_write,
                 saved_cost=saved_cost,
+                saved_seconds=turn_seconds(turn) if is_waste else 0.0,
             )
             turn_savings_list.append(ts)
 

@@ -91,3 +91,17 @@ def test_cli_conflicting_all_and_week_flags():
     assert result.exit_code == 0
     assert "Cannot combine --all with other date filter options." in result.output
 
+
+
+def test_cli_debug_flag_passed_to_estimator():
+    runner = CliRunner()
+    with patch("vylor_estimator.cli.create_estimator") as mock_create:
+        mock_create.return_value = MagicMock()
+
+        result = runner.invoke(main, ["-d"])
+        assert result.exit_code == 0
+        assert mock_create.call_args.kwargs["debug"] is True
+
+        mock_create.reset_mock()
+        result = runner.invoke(main, [])
+        assert mock_create.call_args.kwargs["debug"] is False

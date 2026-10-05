@@ -1,37 +1,57 @@
 # vylor-savings-estimator
 
-> **Instantly estimate how much [Vylor MCP](https://github.com/vylor-ai/vylor-mcp) cuts costs and tokens on your Claude AI sessions — zero configuration required.**
+> **See how much your Claude AI sessions waste on file exploration — in tokens, cost, and time. Zero configuration.**
 
-Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects file-exploration and repo-crawling patterns that Vylor MCP replaces, and produces a rich savings report tracking **cost cut** and **tokens cut**.
+Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects the file-exploration and repo-crawling patterns that [Vylor MCP](https://github.com/Vylor-AI/vylor-mcp-binaries) replaces, and reports how much of your spend was **avoidable waste**.
 
----
-
-## Key Features
-
-- **Automatic Session Discovery**: Automatically discovers sessions from default Claude Code CLI (`~/.claude/projects/`) and Claude Desktop directories across Windows, macOS, and Linux.
-- **Automatic Sub-Agent Stitching**: Detects background sub-agents (e.g. `Explore` agents spawned via the `Agent` tool) and stitches them into their root task session, reporting true total task cost and sub-agent turn counts.
-- **Direct File-Cache Compounding Model**: Accurately models the prompt cache "snowball effect"—avoiding file dumps on early turns eliminates re-reading those files from the prompt cache on every subsequent turn.
-- **Rich Terminal Report**: Beautiful, modern terminal dashboards powered by `rich` with full savings breakdowns by tool, model, and session.
-- **Extensible OOP Architecture**: Built with SOLID principles, abstract interfaces (`ISessionDiscoverer`, `ISessionParser`, `ITurnClassifier`, `ISavingsEngine`, `IReportRenderer`), and Dependency Injection.
+> [!NOTE]
+> The numbers are an *estimate of avoidable waste*, not a guaranteed saving. Vylor can't promise to eliminate all of it; this tool shows how much of your usage looks like exploration that a code-search tool could have handled.
 
 ---
 
-## Installation
+## Install
 
-### From Source / Private Repository
+### One command (standalone binary, no Python needed)
+
+**macOS / Linux**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vylor-AI/vylor-saving-estimator/main/install.sh | sh
+```
+
+**Windows (PowerShell)**
+```powershell
+irm https://raw.githubusercontent.com/Vylor-AI/vylor-saving-estimator/main/install.ps1 | iex
+```
+
+Or download the binary for your platform from **[Releases](../../releases/latest)**:
+
+| Platform | Binary |
+|---|---|
+| Windows (x64) | `vylor-estimate.exe` |
+| macOS (x64 / Apple Silicon) | `vylor-estimate-macos` |
+| Linux (x64) | `vylor-estimate-linux` |
+
+Manual install on macOS / Linux:
+```bash
+chmod +x vylor-estimate-macos
+mv vylor-estimate-macos /usr/local/bin/vylor-estimate
+```
+On Windows, move `vylor-estimate.exe` to any folder in your `PATH`.
+
+### From source
 
 ```bash
-git clone https://github.com/vylor-ai/vylor-savings-estimator.git
-cd vylor-savings-estimator
+git clone https://github.com/vylor-ai/vylor-saving-estimator.git
+cd vylor-saving-estimator
 pip install -e .
 ```
 
-### Once Published to PyPI
+### Via pip / pipx (Python 3.10+)
 
 ```bash
-pip install vylor-savings-estimator
-# or via pipx (isolated environment)
-pipx install vylor-savings-estimator
+pip install vylor-estimate
+# or in an isolated environment
+pipx install vylor-estimate
 ```
 
 ---
@@ -51,63 +71,67 @@ vylor-estimate --since 2025-09-01
 # Explicit path (single file or custom directory)
 vylor-estimate /path/to/session.jsonl
 vylor-estimate /path/to/sessions/
+
+# Detailed report (waste by source, model, and session)
+vylor-estimate -d
 ```
 
----
-
-## How Savings Are Calculated
-
-### The Compounding Cache Reality
-In Claude Code and Claude Desktop, reading files writes their contents directly into the prompt cache (`cache_creation_input_tokens`). On **every single subsequent turn** for the rest of the session—even when the model is merely editing code or reasoning—those files are repeatedly re-read from the cache (`cache_read_input_tokens`).
-
-### The Direct File-Cache Model
-1. **100% Avoided Context**: The actual tokens loaded by file exploration (`Read`, `read_file`, `list_dir`, `grep`) are eliminated from entering the context.
-2. **Downstream Cache Reduction**: That avoided volume is subtracted from `cache_read_tokens` on every future turn in the session:
-   $$\text{saved\_cache\_read} = \min(\text{turn.cache\_read\_tokens}, \text{accumulated\_avoided\_context})$$
-3. **0% Output Tokens**: The model still writes all its code, plans, and answers—output tokens are never credited as saved.
-
----
-
-## What It Detects
- 
-| Vylor Tool | Replaces | Supported Tools & Patterns |
-|---|---|---|
-| `find_files` | Heavy file reads & dumps | `Read`, `read_file`, `cat`, `view_file`, sequential multi-reads |
-| `request_repo_map` | Directory exploration & trees | `Glob`, `list_dir`, `ls`, `tree`, `find` |
-| `find_code_definition` | Symbol searching & code crawling | `Grep`, `grep_search`, `ripgrep`, regex scans |
-
-> [!NOTE]
-> Sessions that already use Vylor MCP tools (`mcp__vylor__*`, `request_repo_map`, etc.) are detected and skipped automatically to prevent double-counting or estimating phantom savings on already optimized runs.
+Session files are read locally. No data is sent anywhere.
 
 ---
 
 ## Example Output
 
+Default: one table, one hint.
+
 ```
-Found 2 session file(s). Parsing...
+                              AGENT OVERHEAD ESTIMATE
+                      Analyzed: 5 session(s)  |  Last 30 days
 
-                            VYLOR SAVINGS ESTIMATE                             
-               Analyzed: 1 session(s)  |  29 turns  |  All-time                
-                         (includes 12 sub-agent turns)                         
-
-+-----------------------------------------------------------------------------+
-| Metric              |  Baseline (paid) | With Vylor MCP |    Saved |  % Cut |
-|---------------------+------------------+----------------+----------+--------|
-| Total Cost          |          $0.5565 |        $0.3080 | -$0.2485 | -44.7% |
-| Total Tokens        |            1.03M |         377.1K |  -656.0K | -63.5% |
-+-----------------------------------------------------------------------------+
-
---------------------------- Top Sessions by Savings ---------------------------
-+-----------------------------------------------------------------------------+
-| Session ID              | Turns | Baseline Cost | Cost Saved |  % Cut | Sub-agents |
-|-------------------------+-------+---------------+------------+--------+------------|
-| 4bc32054-f243-42...e29f |    29 |       $0.5565 |   -$0.2485 | -44.7% |         12 |
-+-----------------------------------------------------------------------------+
-
-+-----------------------------------------------------------------------------+
-| Powered by Vylor MCP -- https://github.com/vylor-ai/vylor-mcp               |
-+-----------------------------------------------------------------------------+
+     +--------------------------------------------------------------------+
+     |                     |            Cost |        Tokens |       Time |
+     |---------------------+-----------------+---------------+------------|
+     | Total               |         $2.6576 |         6.14M |        11m |
+     | Avoidable overhead  | $2.2445 (84.5%) | 5.39M (87.8%) | 9m (83.2%) |
+     +--------------------------------------------------------------------+
+                      Top overhead sources: sub-agents 98%
+                            Run with -d for details.
 ```
+
+- **Total** is what the analyzed sessions cost, in cost, tokens and time.
+- **Avoidable overhead** is the portion spent on exploration and reconnaissance that Vylor tools make unnecessary.
+- **Top overhead sources** tells you what contributes most to the overhead.
+
+`-d` adds overhead by source (cost, tokens, time), a breakdown by model, and the top sessions by overhead.
+
+---
+
+## How Overhead Is Estimated
+
+A turn counts as avoidable overhead when it is one of:
+
+| Source | What counts |
+|---|---|
+| **Sub-agents** | Every turn of a background sub-agent (e.g. `Explore` agents spawned via the `Agent` tool). Whole turn: cost, tokens, time. |
+| **Searches** | `Grep`, `grep_search`, `ripgrep`, or a shell command using `grep` / `rg` / `findstr` / `Select-String`. |
+| **Directory listing** | `Glob`, `list_dir`, `LS`, or a shell command using `find` / `ls` / `tree` / `dir` / `Get-ChildItem`. |
+
+Rules for main-agent turns:
+
+- **Pure exploration only.** Every tool call in the turn must be exploration. A turn that also edits files, builds, or runs tests is not counted.
+- **Shell commands are inspected.** `Bash` / `PowerShell` count only when the command is exploration (`cd src && grep -rn foo . | head`). `git commit`, `npm test` or `git log | grep fix` do not.
+- For an overhead main-agent turn, the output tokens and the prompt-cache reads it caused are counted. For a sub-agent turn, everything is counted.
+
+### Avoidable time
+
+Time is **agent-time**: the sum of the durations of overhead turns, using the turn timestamps in the session files. It is model generation time only (not tool run time), each turn is capped at 10 minutes so idle gaps don't skew the totals, and parallel sub-agents can overlap, so it can exceed the wall-clock time.
+
+### The compounding cache
+
+Reading files writes their contents into the prompt cache. On every later turn of the session those files are re-read from the cache, so avoided exploration also shrinks the cache reads of later turns. That is why exploration is more expensive than its own token count suggests.
+
+> [!NOTE]
+> Sessions that already use Vylor MCP tools (`mcp__vylor__*`, `request_repo_map`, etc.) are detected and skipped automatically, so already-optimized runs aren't counted.
 
 ---
 
@@ -126,8 +150,10 @@ Automatically discovered from platform defaults:
 ## Development
 
 ```bash
-git clone https://github.com/vylor-ai/vylor-savings-estimator.git
-cd vylor-savings-estimator
+git clone https://github.com/vylor-ai/vylor-saving-estimator.git
+cd vylor-saving-estimator
 pip install -e ".[dev]"
 pytest
 ```
+
+Binaries are built by [`build-binary.yml`](.github/workflows/build-binary.yml) on every `v*` tag and published to this repo's [Releases](../../releases).

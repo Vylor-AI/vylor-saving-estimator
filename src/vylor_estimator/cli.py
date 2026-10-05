@@ -28,6 +28,8 @@ def _parse_date(ctx, param, value) -> date | None:
 @click.option("--all", "all_time", is_flag=True, default=False, help="Analyze all sessions (all-time).")
 @click.option("--since", default=None, metavar="DATE", callback=_parse_date, is_eager=False,
               help="Analyze sessions on or after DATE (YYYY-MM-DD).")
+@click.option("-d", "--debug", is_flag=True, default=False,
+              help="Show the detailed report (waste by source, model, and session).")
 @click.version_option(__version__, "--version", prog_name="vylor-estimate")
 def main(
     path: str | None,
@@ -35,6 +37,7 @@ def main(
     month: bool,
     all_time: bool,
     since: date | None,
+    debug: bool,
 ) -> None:
     try:
         date_filter = DateFilter.resolve(
@@ -43,7 +46,7 @@ def main(
             since=since,
             all_time=all_time,
         )
-        estimator = create_estimator(path=path)
+        estimator = create_estimator(path=path, debug=debug)
         estimator.run(date_filter=date_filter)
 
     except FileNotFoundError as e:

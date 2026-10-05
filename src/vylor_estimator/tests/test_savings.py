@@ -245,3 +245,72 @@ def test_subagent_token_totals_accumulate(savings_engine: ConservativeSavingsEng
     # output_tokens are now also saved for subagent turns (sub1=200, sub2=200)
     assert report.total.saved_output_tokens == 400
     assert report.total.total_saved_tokens == 5_200  # 3000 + 400 + 1300 + 500
+
+
+# ---------------------------------------------------------------------------
+# Time and waste-source tracking
+# ---------------------------------------------------------------------------
+
+def _timed_turn(turn_id: str, *, is_subagent: bool, seconds, minute: int = 0):
+    t = _make_turn(turn_id, is_subagent=is_subagent, minute=minute)
+    t.duration_seconds = seconds
+    return t
+
+
+def test_wasted_time_sums_waste_turn_durations(savings_engine: ConservativeSavingsEngine):
+    from vylor_estimator.classifier import SOURCE_SEARCH, SOURCE_SUBAGENTS, ClassifiedTurn
+
+    sub = _timed_turn("sub", is_subagent=True, seconds=30.0, minute=0)
+    explore = _timed_turn("exp", is_subagent=False, seconds=12.0, minute=1)
+    other = _timed_turn("other", is_subagent=False, seconds=8.0, minute=2)
+
+    cts = [
+        ClassifiedTurn(turn=sub, vylor_intercept=False, source=SOURCE_SUBAGENTS),
+        ClassifiedTurn(turn=explore, vylor_intercept=True, source=SOURCE_SEARCH),
+        ClassifiedTurn(turn=other, vylor_intercept=False),
+    ]
+    report = savings_engine.calculate(cts)
+
+    assert report.total.baseline_seconds == pytest.approx(50.0)
+    assert report.total.saved_seconds == pytest.approx(42.0)
+    assert report.total.pct_time_cut == pytest.approx(84.0)
+
+
+def test_turn_duration_none_and_clamped(savings_engine: ConservativeSavingsEngine):
+    from vylor_estimator.classifier import ClassifiedTurn
+    from vylor_estimator.savings import MAX_TURN_SECONDS
+
+    no_duration = _timed_turn("a", is_subagent=True, seconds=None, minute=0)
+    huge = _timed_turn("b", is_subagent=True, seconds=86_400.0, minute=1)
+    cts = [ClassifiedTurn(turn=t, vylor_intercept=False) for t in (no_duration, huge)]
+
+    report = savings_engine.calculate(cts)
+
+    assert report.total.saved_seconds == pytest.approx(MAX_TURN_SECONDS)
+    assert report.total.baseline_seconds == pytest.approx(MAX_TURN_SECONDS)
+
+
+def test_by_source_sums_to_waste_totals(savings_engine: ConservativeSavingsEngine):
+    from vylor_estimator.classifier import (
+        SOURCE_LIST,
+        SOURCE_SEARCH,
+        SOURCE_SUBAGENTS,
+        ClassifiedTurn,
+    )
+
+    turns = [
+        (_timed_turn("s", is_subagent=True, seconds=5.0, minute=0), False, SOURCE_SUBAGENTS),
+        (_timed_turn("g", is_subagent=False, seconds=3.0, minute=1), True, SOURCE_SEARCH),
+        (_timed_turn("l", is_subagent=False, seconds=2.0, minute=2), True, SOURCE_LIST),
+        (_timed_turn("x", is_subagent=False, seconds=9.0, minute=3), False, None),
+    ]
+    cts = [ClassifiedTurn(turn=t, vylor_intercept=i, source=s) for t, i, s in turns]
+    report = savings_engine.calculate(cts)
+
+    by_source = report.total.by_source
+    assert set(by_source) == {SOURCE_SUBAGENTS, SOURCE_SEARCH, SOURCE_LIST}
+    assert sum(b["cost"] for b in by_source.values()) == pytest.approx(report.total.saved_cost)
+    assert sum(b["tokens"] for b in by_source.values()) == report.total.total_saved_tokens
+    assert sum(b["seconds"] for b in by_source.values()) == pytest.approx(
+        report.total.saved_seconds
+    )

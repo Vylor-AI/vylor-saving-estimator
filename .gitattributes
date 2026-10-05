@@ -1,0 +1,8 @@
+# Auto-detect text files and normalize line endings on commit
+* text=auto
+
+# Bash scripts must always use LF line endings (required for curl ... | bash on Linux/macOS)
+*.sh text eol=lf
+
+# PowerShell scripts
+*.ps1 text eol=crlf

@@ -1,13 +1,40 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from vylor_estimator.parser import Turn
 
+from vylor_estimator.parser import ToolCall, Turn
+from vylor_estimator.shell import (
+    SOURCE_LIST,
+    SOURCE_SEARCH,
+    _best_source,
+    classify_command,
+    extract_command,
+)
+
+SOURCE_SUBAGENTS = "Sub-agents"
+
+__all__ = [
+    "ClassifiedTurn",
+    "ITurnClassifier",
+    "PatternTurnClassifier",
+    "SOURCE_LIST",
+    "SOURCE_SEARCH",
+    "SOURCE_SUBAGENTS",
+    "classify_command",
+]
+
+# Dedicated exploration tools (matched by tool name).
+_SEARCH_TOOLS: frozenset[str] = frozenset(["grep", "grep_search", "ripgrep"])
+_LIST_TOOLS: frozenset[str] = frozenset(["glob", "list_dir", "ls", "find"])
+
+# Shell tools: only wasteful when the command itself is exploration.
+_SHELL_TOOLS: frozenset[str] = frozenset(["bash", "powershell", "run_command", "cmd"])
 
 _SHELL_EXEC_TOOLS: frozenset[str] = frozenset([
     "bash", "powershell", "run_command", "cmd",
     "list_dir", "ls", "find", "glob",
-    "read_file", "read", "cat", "view_file",
-    "grep", "grep_search", "ripgrep"
+    "grep", "grep_search", "ripgrep",
 ])
 
 _VYLOR_TOOLS: frozenset[str] = frozenset([
@@ -19,10 +46,12 @@ _VYLOR_TOOLS: frozenset[str] = frozenset([
     "find_code_definition",
 ])
 
+
 @dataclass
 class ClassifiedTurn:
     turn: Turn
     vylor_intercept: bool
+    source: str | None = None
 
 
 class ITurnClassifier(ABC):
@@ -48,21 +77,43 @@ class PatternTurnClassifier(ITurnClassifier):
     def is_vylor_tool(self, name: str) -> bool:
         n = name.lower().strip()
         return (
-            n.startswith("mcp__vylor__")
-            or n.startswith("vylor__")
+            n.startswith(("mcp__vylor__", "vylor__"))
             or n in self.vylor_tools
         )
 
+    def _tool_call_source(self, tc: ToolCall) -> str | None:
+        """Exploration source of one tool call, or None if it is not pure exploration."""
+        name = tc.name.lower().strip()
+        if name not in self.shell_exec_tools:
+            return None
+        if name in _SEARCH_TOOLS:
+            return SOURCE_SEARCH
+        if name in _LIST_TOOLS:
+            return SOURCE_LIST
+        if name in _SHELL_TOOLS:
+            return classify_command(extract_command(tc.args))
+        return None
+
     def classify_turn(self, turn: Turn) -> ClassifiedTurn:
-        tool_names = [tc.name.lower().strip() for tc in turn.tool_calls]
+        sub_source = SOURCE_SUBAGENTS if turn.is_subagent else None
 
-        if any(self.is_vylor_tool(n) for n in tool_names):
-            return ClassifiedTurn(turn=turn, vylor_intercept=False)
+        if any(self.is_vylor_tool(tc.name) for tc in turn.tool_calls):
+            return ClassifiedTurn(turn=turn, vylor_intercept=False, source=sub_source)
 
-        if any(n in self.shell_exec_tools for n in tool_names):
-            return ClassifiedTurn(turn=turn, vylor_intercept=True)
+        if not turn.tool_calls:
+            return ClassifiedTurn(turn=turn, vylor_intercept=False, source=sub_source)
 
-        return ClassifiedTurn(turn=turn, vylor_intercept=False)
+        # Pure exploration only: every tool call in the turn must be exploration.
+        sources = {self._tool_call_source(tc) for tc in turn.tool_calls}
+        if None in sources:
+            return ClassifiedTurn(turn=turn, vylor_intercept=False, source=sub_source)
+
+        explore_source = _best_source({s for s in sources if s is not None})
+        return ClassifiedTurn(
+            turn=turn,
+            vylor_intercept=True,
+            source=sub_source or explore_source,
+        )
 
     def classify(self, turns: list[Turn]) -> list[ClassifiedTurn]:
         self.skipped_sessions = {
