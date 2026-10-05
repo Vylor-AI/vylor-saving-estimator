@@ -60,45 +60,48 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
-      - name: Create GitHub Release on vylor-estimate-binaries
+      - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.BINARIES_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then
             TAG="${{ github.ref_name }}"
           fi
 
-          cat << 'EOF' > release_notes.md
+          cat << EOF > release_notes.md
           ## Install
 
           **macOS / Linux:**
-          ```bash
-          curl -fsSL https://raw.githubusercontent.com/Vylor-AI/vylor-estimate-binaries/main/install.sh | sh
-          ```
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sh
+          \`\`\`
 
           **Windows (PowerShell):**
-          ```powershell
-          irm https://raw.githubusercontent.com/Vylor-AI/vylor-estimate-binaries/main/install.ps1 | iex
-          ```
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex
+          \`\`\`
 
           Or download the binary for your platform directly from the assets below.
           EOF
 
-          if gh release view "$TAG" --repo Vylor-AI/vylor-estimate-binaries >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG already exists, updating assets..."
             gh release upload "$TAG" vylor-estimate.exe vylor-estimate-macos vylor-estimate-linux \
-              --repo Vylor-AI/vylor-estimate-binaries \
+              --repo "$REPO" \
               --clobber
           else
             gh release create "$TAG" \
-              --repo Vylor-AI/vylor-estimate-binaries \
+              --repo "$REPO" \
               --title "vylor-estimate $TAG" \
               --notes-file release_notes.md \
               vylor-estimate.exe \

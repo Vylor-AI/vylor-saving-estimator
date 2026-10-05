@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vylor-estimate"
-version = "0.1.0"
-description = "Estimate how much Vylor MCP would save on your Claude AI sessions"
+version = "0.3.0"
+description = "Estimate avoidable overhead in tokens, cost and time from Claude AI session exploration"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-keywords = ["claude", "mcp", "vylor", "cost", "tokens", "savings", "ai", "anthropic"]
+keywords = ["claude", "mcp", "vylor", "cost", "tokens", "overhead", "savings", "ai", "anthropic"]
 authors = [
     { name = "Vylor AI" },
 ]
@@ -52,6 +52,10 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]

@@ -124,7 +124,7 @@ class EstimatorService:
         if self.progress_callback and getattr(self.classifier, "skipped_sessions", None):
             skipped_count = len(self.classifier.skipped_sessions)
             if skipped_count > 0:
-                self.progress_callback(f"Skipped {skipped_count} session(s) already using Vylor MCP.")
+                self.progress_callback(f"Skipped {skipped_count} session(s) already using Vylor tools.")
 
         report = self.savings_engine.calculate(classified)
 
@@ -144,16 +144,20 @@ def create_estimator(
     savings_engine: ISavingsEngine | None = None,
     renderer: IReportRenderer | None = None,
     show_progress: bool = True,
+    debug: bool = False,
 ) -> EstimatorService:
     pricing = pricing_calculator or ClaudePricingCalculator()
     disc = discoverer or ClaudeSessionDiscoverer(explicit_path=path)
     pars = parser or ClaudeJsonlParser(pricing_calculator=pricing)
     clsf = classifier or PatternTurnClassifier()
     seng = savings_engine or ConservativeSavingsEngine()
-    rend = renderer or TerminalReportRenderer()
+    rend = renderer or TerminalReportRenderer(debug=debug)
 
     console = Console()
-    progress_cb = (lambda msg: console.print(f"[dim]{msg}[/dim]")) if show_progress else None
+    # Progress chatter is part of the detailed output; the default run stays quiet.
+    progress_cb = (
+        (lambda msg: console.print(f"[dim]{msg}[/dim]")) if (show_progress and debug) else None
+    )
 
     return EstimatorService(
         discoverer=disc,
