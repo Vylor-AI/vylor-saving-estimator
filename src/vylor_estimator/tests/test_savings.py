@@ -156,6 +156,26 @@ def test_subagent_turns_are_fully_saved(savings_engine: ConservativeSavingsEngin
     assert ts.saved_cache_write_tokens == sub.cache_write_tokens
 
 
+def test_plan_subagent_is_not_eliminated(savings_engine: ConservativeSavingsEngine):
+    """
+    Plan subagent turns are NOT eliminated as Tier 1 subagents.
+    """
+    from vylor_estimator.classifier import ClassifiedTurn
+
+    plan_sub = _make_turn("plan1", is_subagent=True, cost=0.07,
+                          input_tokens=2_000, cache_read_tokens=1_000, cache_write_tokens=500)
+    plan_sub.subagent_type = "Plan"
+    ct = ClassifiedTurn(turn=plan_sub, vylor_intercept=False)
+
+    report = savings_engine.calculate([ct])
+    ts = report.turn_savings[0]
+
+    assert ts.saved_cost == 0.0
+    assert ts.saved_input_tokens == 0
+    assert ts.saved_cache_tokens == 0
+    assert ts.saved_cache_write_tokens == 0
+
+
 def test_main_agent_shell_exec_saves_cache_read_and_output(savings_engine: ConservativeSavingsEngine):
     """
     Main-agent turns with vylor_intercept=True (shell-exec detected) should

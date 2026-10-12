@@ -3,8 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 
+from vylor_estimator.activity import (
+    ActivityReport,
+    IActivityAnalyzer,
+    ToolActivityAnalyzer,
+)
 from vylor_estimator.classifier import SOURCE_SUBAGENTS, ClassifiedTurn
 from vylor_estimator.parser import Turn
 from vylor_estimator.pricing import (
@@ -68,6 +73,10 @@ class Aggregate:
     baseline_seconds: float = 0.0
     saved_seconds: float = 0.0
 
+    # Timestamps
+    first_turn_at: datetime | None = None
+    last_turn_at: datetime | None = None
+
     # Per-model breakdown
     by_model: dict[str, dict] = field(default_factory=dict)
 
@@ -128,6 +137,7 @@ class SavingsReport:
     by_session: dict[str, Aggregate]   # session_id -> Aggregate
     by_day: dict[date, Aggregate]       # date -> Aggregate
     turn_savings: list[TurnSavings]
+    activity: ActivityReport | None = None
 
 
 class ISavingsEngine(ABC):
@@ -152,8 +162,13 @@ class ConservativeSavingsEngine(ISavingsEngine):
       the cache_read_tokens cost of the intercepted turn.
     """
 
-    def __init__(self, pricing_calculator: IPricingCalculator | None = None) -> None:
+    def __init__(
+        self,
+        pricing_calculator: IPricingCalculator | None = None,
+        activity_analyzer: IActivityAnalyzer | None = None,
+    ) -> None:
         self.pricing_calculator = pricing_calculator or ClaudePricingCalculator()
+        self.activity_analyzer = activity_analyzer or ToolActivityAnalyzer(self.pricing_calculator)
 
     def _ensure_model_key(self, agg: Aggregate, model: str) -> None:
         if model not in agg.by_model:
@@ -169,7 +184,8 @@ class ConservativeSavingsEngine(ISavingsEngine):
         turn = ct.turn
 
         agg.turns_analyzed += 1
-        if turn.is_subagent:
+        is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
+        if is_explore_sub:
             agg.subagent_turns += 1
 
         agg.baseline_cost += turn.cost
@@ -178,6 +194,12 @@ class ConservativeSavingsEngine(ISavingsEngine):
         agg.baseline_cache_read_tokens += turn.cache_read_tokens
         agg.baseline_cache_write_tokens += turn.cache_write_tokens
         agg.baseline_seconds += turn_seconds(turn)
+
+        if turn.timestamp:
+            if agg.first_turn_at is None or turn.timestamp < agg.first_turn_at:
+                agg.first_turn_at = turn.timestamp
+            if agg.last_turn_at is None or turn.timestamp > agg.last_turn_at:
+                agg.last_turn_at = turn.timestamp
 
         is_waste = ts.saved_cost > 0 or ts.total_saved_tokens > 0
         if is_waste:
@@ -188,7 +210,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
             agg.saved_cache_write_tokens += ts.saved_cache_write_tokens
             agg.saved_seconds += ts.saved_seconds
 
-            source = ct.source or (SOURCE_SUBAGENTS if turn.is_subagent else SOURCE_OTHER)
+            source = ct.source or (SOURCE_SUBAGENTS if is_explore_sub else SOURCE_OTHER)
             bucket = agg.by_source.setdefault(
                 source, {"turns": 0, "cost": 0.0, "tokens": 0, "seconds": 0.0}
             )
@@ -210,19 +232,14 @@ class ConservativeSavingsEngine(ISavingsEngine):
         Two-tier savings calculation.
 
         Tier 1 — Subagent elimination:
-            Every turn where is_subagent=True is fully eliminated by Vylor MCP.
+            Explore subagent turns are eliminated by Vylor MCP.
             Saving = full cost + all tokens of that turn.
 
         Tier 2 — Shell-exec cache savings:
-            Main-agent turns with vylor_intercept=True called a shell/glob/grep/
+            Turns with vylor_intercept=True called a shell/glob/grep/
             file-read tool.  Vylor intercepts that call; the cache_read_tokens
             those tools would have generated on all later turns are saved.
             Saving = cache_read_tokens cost only (input/output unchanged).
-
-        Example:
-            Main turn 1   vylor_intercept=True   cache_read=10k  → save $cache_read cost
-            Sub  turn 1   is_subagent=True        cost=$0.05      → save $0.05 + all tokens
-            Main turn 2   vylor_intercept=False   (text only)     → $0 saved
         """
         total = Aggregate()
         by_session: dict[str, Aggregate] = defaultdict(Aggregate)
@@ -231,9 +248,10 @@ class ConservativeSavingsEngine(ISavingsEngine):
 
         for ct in classified_turns:
             turn = ct.turn
+            is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
 
-            if turn.is_subagent:
-                # Tier 1: full subagent turn eliminated
+            if is_explore_sub:
+                # Tier 1: explore subagent turn eliminated
                 saved_input = turn.input_tokens
                 saved_output = turn.output_tokens
                 saved_cache = turn.cache_read_tokens
@@ -241,7 +259,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
                 saved_cost  = turn.cost
 
             elif ct.vylor_intercept:
-                # Tier 2: main-agent shell-exec turn — save cache_read + output cost
+                # Tier 2: shell-exec turn — save cache_read + output cost
                 # The Bash/Glob/Grep call is replaced by a concise Vylor tool call;
                 # all output tokens (including reasoning) from this turn are gone.
                 saved_input = 0
@@ -263,7 +281,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
                 saved_write = 0
                 saved_cost  = 0.0
 
-            is_waste = turn.is_subagent or ct.vylor_intercept
+            is_waste = is_explore_sub or ct.vylor_intercept
             ts = TurnSavings(
                 classified=ct,
                 saved_input_tokens=saved_input,
@@ -282,9 +300,12 @@ class ConservativeSavingsEngine(ISavingsEngine):
                 day = turn.timestamp.astimezone(timezone.utc).date()
                 self._add_to_aggregate(by_day[day], ts)
 
+        activity = self.activity_analyzer.analyze([ct.turn for ct in classified_turns])
+
         return SavingsReport(
             total=total,
             by_session=dict(by_session),
             by_day=dict(sorted(by_day.items())),
             turn_savings=turn_savings_list,
+            activity=activity,
         )

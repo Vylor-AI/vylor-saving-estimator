@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ class Turn:
     tool_calls: list[ToolCall]
     cost: float
     is_subagent: bool
+    subagent_type: str | None = None
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -63,13 +65,17 @@ class ClaudeJsonlParser(ISessionParser):
         events_by_uuid: dict[str, dict] = {}
         messages_map: dict[str, dict] = {}
         message_order: list[str] = []
+        tool_use_subagent_type: dict[str, str] = {}
+        agent_id_to_subagent_type: dict[str, str] = {}
 
         # First pass: index all events
         for p in paths:
+            subagent_file_id: str | None = None
             if "subagents" in p.parts:
                 sub_idx = p.parts.index("subagents")
                 session_id = p.parts[sub_idx - 1]
                 is_subagent_file = True
+                subagent_file_id = p.stem.replace("agent-", "")
             else:
                 session_id = p.stem
                 is_subagent_file = False
@@ -86,6 +92,22 @@ class ClaudeJsonlParser(ISessionParser):
                         uuid = data.get("uuid")
                         if uuid:
                             events_by_uuid[uuid] = data
+
+                        tur = data.get("toolUseResult")
+                        if isinstance(tur, dict) and tur.get("agentId"):
+                            aid = tur["agentId"]
+                            if tur.get("subagent_type"):
+                                agent_id_to_subagent_type[aid] = tur["subagent_type"]
+
+                        content_str = data.get("content")
+                        if isinstance(content_str, str) and "<task-id>" in content_str and "<tool-use-id>" in content_str:
+                            tid_m = re.search(r"<task-id>([^<]+)</task-id>", content_str)
+                            tuid_m = re.search(r"<tool-use-id>([^<]+)</tool-use-id>", content_str)
+                            if tid_m and tuid_m:
+                                tid = tid_m.group(1)
+                                tuid = tuid_m.group(1)
+                                if tuid in tool_use_subagent_type:
+                                    agent_id_to_subagent_type[tid] = tool_use_subagent_type[tuid]
 
                         if data.get("type") == "assistant" and "message" in data:
                             msg = data["message"]
@@ -104,6 +126,7 @@ class ClaudeJsonlParser(ISessionParser):
                                     "last_timestamp": data.get("timestamp"),
                                     "session_id": session_id,
                                     "is_subagent": is_subagent_file,
+                                    "subagent_file_id": subagent_file_id,
                                 }
                                 message_order.append(msg_id)
 
@@ -118,6 +141,11 @@ class ClaudeJsonlParser(ISessionParser):
                                 if isinstance(item, dict) and item.get("type") == "tool_use":
                                     name = item.get("name", "")
                                     args = item.get("input", {}) or {}
+                                    if name in ("Task", "Agent") and isinstance(args, dict):
+                                        st = args.get("subagent_type") or args.get("type")
+                                        if st and item.get("id"):
+                                            tool_use_subagent_type[item["id"]] = st
+
                                     key = f"{name}:{json.dumps(args, sort_keys=True)}"
                                     if key not in {
                                         f"{tc['name']}:{json.dumps(tc['args'], sort_keys=True)}"
@@ -179,6 +207,10 @@ class ClaudeJsonlParser(ISessionParser):
                     ephemeral_1h_tokens=e_1h,
                 )
 
+                subagent_type = None
+                if entry.get("subagent_file_id"):
+                    subagent_type = agent_id_to_subagent_type.get(entry["subagent_file_id"])
+
                 turns.append(Turn(
                     turn_id=msg_id,
                     session_id=entry["session_id"],
@@ -195,6 +227,7 @@ class ClaudeJsonlParser(ISessionParser):
                     tool_calls=tool_calls,
                     cost=cost,
                     is_subagent=entry["is_subagent"],
+                    subagent_type=subagent_type,
                 ))
             except Exception:
                 skipped += 1

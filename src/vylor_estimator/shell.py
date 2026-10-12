@@ -149,6 +149,8 @@ def classify_command(command: str) -> str | None:
 
 def extract_command(args: dict[str, Any]) -> str:
     """Extract shell command string from tool args across different schemas."""
+    if not isinstance(args, dict):
+        return ""
     for key in _COMMAND_ARG_KEYS:
         value = args.get(key)
         if isinstance(value, str) and value.strip():

@@ -57,29 +57,30 @@ def _render(debug: bool) -> str:
 def test_default_output_is_compact():
     out = _render(debug=False)
 
-    assert "AGENT OVERHEAD ESTIMATE" in out
-    assert "1 session(s)" in out and "Last 30 days" in out
-    assert "Total" in out and "Avoidable overhead" in out
+    assert "VYLOR MCP SAVINGS ESTIMATE" in out
+    assert "1 session(s)" in out and "(Last 30 days) 2026-01-01 to 2026-01-01" in out
+    assert "Total" in out and "Vylor MCP savings" in out
     assert "Cost" in out and "Tokens" in out and "Time" in out
-    assert "Top overhead sources: sub-agents" in out
+    assert "Top savings sources: sub-agents" in out
+    assert "Tool calls" in out
+    assert "Cost breakdown" in out
     assert "-d" in out
-    # No detailed breakdowns or Vylor marketing by default
-    assert "Top Sessions by Overhead" not in out
+    # No detailed breakdowns by default
+    assert "Top Sessions by Savings" not in out
     assert "Breakdown by Model" not in out
-    assert "Overhead by Source" not in out
+    assert "Savings by Source" not in out
     assert "Powered by" not in out
-    assert "SAVINGS" not in out.upper()
 
 
 def test_debug_output_includes_details():
     out = _render(debug=True)
 
-    assert "Avoidable overhead" in out
-    assert "Overhead by Source" in out
+    assert "Vylor MCP savings" in out
+    assert "Savings by Source" in out
     assert "Breakdown by Model" in out
-    assert "Top Sessions by Overhead" in out
+    assert "Top Sessions by Savings" in out
     assert "Session" in out
-    assert "agent-time" in out
+    assert "Notes: avoidable overhead" not in out
 
 
 def test_fmt_time():

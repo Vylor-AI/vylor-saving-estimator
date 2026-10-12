@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import timezone
+
 from rich import box
 from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 
 from vylor_estimator.report.base import IReportRenderer
-from vylor_estimator.savings import MAX_TURN_SECONDS, SavingsReport
+from vylor_estimator.savings import SavingsReport
 
 ACCENT = "#6C47FF"
 
@@ -37,11 +39,11 @@ def _pct(part: float, whole: float) -> float:
 
 class TerminalReportRenderer(IReportRenderer):
     """
-    Renders the overhead estimate.
+    Renders the Vylor MCP savings estimate.
 
-    Default output is a single compact table (total vs. avoidable overhead for
-    cost, tokens and time) plus a one-line hint about the biggest overhead
-    sources.  ``debug=True`` appends the detailed breakdowns.
+    Default output is a single compact table (total vs. Vylor MCP savings for
+    cost, tokens and time) plus tool activity breakdown. ``debug=True`` appends
+    the detailed breakdowns.
     """
 
     def __init__(self, console: Console | None = None, debug: bool = False) -> None:
@@ -57,9 +59,17 @@ class TerminalReportRenderer(IReportRenderer):
         c = self.console
 
         c.print()
-        c.print(f"[bold white on {ACCENT}]  AGENT OVERHEAD ESTIMATE  [/]", justify="center")
+        c.print(f"[bold white on {ACCENT}]  VYLOR MCP SAVINGS ESTIMATE  [/]", justify="center")
+
+        if agg.first_turn_at is not None and agg.last_turn_at is not None:
+            start_d = agg.first_turn_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            end_d = agg.last_turn_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            date_str = f"({date_range_label}) {start_d} to {end_d}"
+        else:
+            date_str = date_range_label
+
         c.print(
-            f"[dim]Analyzed: {len(report.by_session)} session(s)  |  {date_range_label}[/dim]",
+            f"[dim]Analyzed: {len(report.by_session)} session(s)  |  {date_str}[/dim]",
             justify="center",
         )
         c.print()
@@ -81,17 +91,48 @@ class TerminalReportRenderer(IReportRenderer):
             style="yellow",
         )
         table.add_row(
-            "Avoidable overhead",
+            "Vylor MCP savings",
             f"${agg.saved_cost:,.4f} ({agg.pct_cost_cut:.1f}%)",
             f"{_fmt_tokens(agg.total_saved_tokens)} ({agg.pct_tokens_cut:.1f}%)",
             f"{_fmt_time(agg.saved_seconds)} ({agg.pct_time_cut:.1f}%)",
-            style="bold red",
+            style="bold green",
         )
         c.print(table, justify="center")
 
         sources_line = self._sources_line(report)
         if sources_line:
             c.print(sources_line, justify="center")
+
+        if report.activity and report.activity.has_activity:
+            act = report.activity
+            if act.total_calls > 0:
+                core_cats = ["Read", "Search", "Commands", "Write"]
+                call_parts = []
+                for cat, count in sorted(act.calls_by_category.items(), key=lambda kv: -kv[1]):
+                    pct = round(count / act.total_calls * 100)
+                    if pct >= 1:
+                        call_parts.append(f"{cat} {pct}%")
+                for c_cat in core_cats:
+                    if c_cat not in [p.split()[0] for p in call_parts]:
+                        call_parts.append(f"{c_cat} 0%")
+                if call_parts:
+                    c.print(f"[dim]Tool calls ({act.total_calls}): " + " | ".join(call_parts) + "[/dim]", justify="center")
+
+            cost_parts = []
+            if act.cache_read_cost_pct > 0:
+                cost_parts.append(f"cache_read {act.cache_read_cost_pct:.0f}%")
+            if act.cache_creation_cost_pct > 0:
+                cost_parts.append(f"cache_creation {act.cache_creation_cost_pct:.0f}%")
+            if act.output_cost_pct > 0:
+                out_str = f"output_tokens {act.output_cost_pct:.0f}%"
+                if act.thinking_pct_of_output > 0:
+                    out_str += f" (thinking_tokens {act.thinking_pct_of_output:.0f}%)"
+                cost_parts.append(out_str)
+            if act.input_cost_pct >= 1.0:
+                cost_parts.append(f"input_tokens {act.input_cost_pct:.0f}%")
+
+            if cost_parts:
+                c.print("[dim]Cost breakdown: " + " | ".join(cost_parts) + "[/dim]", justify="center")
 
         if self.debug:
             self._render_details(report)
@@ -103,20 +144,37 @@ class TerminalReportRenderer(IReportRenderer):
     def _sources_line(report: SavingsReport) -> str:
         sources = report.total.by_source
         if not sources:
-            return "[dim]No avoidable overhead detected.[/dim]"
+            return "[dim]No Vylor MCP savings detected.[/dim]"
 
         total_cost = sum(s["cost"] for s in sources.values())
         key = "cost" if total_cost > 0 else "tokens"
         total = total_cost if total_cost > 0 else sum(s["tokens"] for s in sources.values())
         ranked = sorted(sources.items(), key=lambda kv: -kv[1][key])
-        parts = [
-            f"{name.lower()} {_pct(info[key], total):.0f}%"
-            for name, info in ranked
-            if info[key] > 0
-        ]
+        parts = []
+        for name, info in ranked:
+            if info[key] <= 0:
+                continue
+            if name == "Sub-agents" and report.activity and report.activity.subagent_types:
+                sub_types = {
+                    st: cnt
+                    for st, cnt in report.activity.subagent_types.items()
+                    if st != "Plan"
+                }
+                if sub_types:
+                    tot_sub = sum(sub_types.values())
+                    sub_strs = [
+                        f"{st} {_pct(cnt, tot_sub):.0f}%"
+                        for st, cnt in sorted(sub_types.items(), key=lambda kv: -kv[1])
+                    ]
+                    parts.append(f"{name.lower()} {_pct(info[key], total):.0f}% ({', '.join(sub_strs)})")
+                else:
+                    parts.append(f"{name.lower()} {_pct(info[key], total):.0f}%")
+            else:
+                parts.append(f"{name.lower()} {_pct(info[key], total):.0f}%")
+
         if not parts:
             return ""
-        return "[dim]Top overhead sources: " + "  |  ".join(parts) + "[/dim]"
+        return "[dim]Top savings sources: " + "  |  ".join(parts) + "[/dim]"
 
     def _render_details(self, report: SavingsReport) -> None:
         agg = report.total
@@ -131,15 +189,15 @@ class TerminalReportRenderer(IReportRenderer):
         c.print()
 
         if agg.by_source:
-            c.print(Rule(f"[bold {ACCENT}]Overhead by Source", style=ACCENT))
+            c.print(Rule(f"[bold {ACCENT}]Savings by Source", style=ACCENT))
             t = Table(box=box.SIMPLE_HEAD, header_style="bold white",
                       border_style="dim", expand=True)
             t.add_column("Source",       style="bold white")
             t.add_column("Turns",        justify="right")
-            t.add_column("Cost",         justify="right", style="red")
+            t.add_column("Cost",         justify="right", style="green")
             t.add_column("Tokens",       justify="right")
             t.add_column("Time",         justify="right")
-            t.add_column("% of overhead", justify="right", style="cyan")
+            t.add_column("% of savings",  justify="right", style="cyan")
 
             total_cost = sum(s["cost"] for s in agg.by_source.values())
             for name, info in sorted(agg.by_source.items(), key=lambda kv: -kv[1]["cost"]):
@@ -161,7 +219,7 @@ class TerminalReportRenderer(IReportRenderer):
             t3.add_column("Model",         style="bold white")
             t3.add_column("Turns",         justify="right")
             t3.add_column("Baseline Cost", justify="right", style="yellow")
-            t3.add_column("Overhead Cost", justify="right", style="red")
+            t3.add_column("Savings",       justify="right", style="green")
 
             for model_name, info in sorted(agg.by_model.items(), key=lambda x: -x[1]["baseline_cost"]):
                 short = model_name.replace("claude-", "").strip()
@@ -175,14 +233,14 @@ class TerminalReportRenderer(IReportRenderer):
             c.print()
 
         if report.by_session:
-            c.print(Rule(f"[bold {ACCENT}]Top Sessions by Overhead", style=ACCENT))
+            c.print(Rule(f"[bold {ACCENT}]Top Sessions by Savings", style=ACCENT))
             t4 = Table(box=box.SIMPLE_HEAD, header_style="bold white",
                        border_style="dim")
             t4.add_column("Session",    style="dim", no_wrap=True)
             t4.add_column("Turns",      justify="right", no_wrap=True)
             t4.add_column("Cost",       justify="right", style="yellow", no_wrap=True)
-            t4.add_column("Overhead",   justify="right", style="red", no_wrap=True)
-            t4.add_column("% Overhead", justify="right", style="cyan", no_wrap=True)
+            t4.add_column("Savings",    justify="right", style="green", no_wrap=True)
+            t4.add_column("% Savings",  justify="right", style="cyan", no_wrap=True)
             t4.add_column("Time",       justify="right", no_wrap=True)
             t4.add_column("Agents",     justify="right", no_wrap=True)
 
@@ -199,10 +257,3 @@ class TerminalReportRenderer(IReportRenderer):
                 )
             c.print(t4)
             c.print()
-
-        c.print(
-            "[dim]Notes: avoidable overhead is an estimate of what Vylor tools could reduce, not a guaranteed "
-            "saving. Time is agent-time (sum of turn durations, each capped at "
-            f"{_fmt_time(MAX_TURN_SECONDS)}); it excludes tool run time and parallel "
-            "sub-agents can overlap.[/dim]"
-        )

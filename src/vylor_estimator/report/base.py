@@ -12,5 +12,5 @@ class IReportRenderer(ABC):
         report: SavingsReport,
         date_range_label: str = "All-time",
     ) -> None:
-        """Render the overhead report."""
+        """Render the savings report."""
 

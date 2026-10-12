@@ -117,7 +117,9 @@ class EstimatorService:
                 ]
 
         if not turns:
-            raise ValueError("No turns found in the specified date range.")
+            raise ValueError(
+                "No turns found in the specified date range. Run with --all to see results."
+            )
 
         classified = self.classifier.classify(turns)
 

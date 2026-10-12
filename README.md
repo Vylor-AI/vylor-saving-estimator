@@ -1,11 +1,11 @@
 # vylor-savings-estimator
 
-> **See how much your Claude AI sessions waste on file exploration — in tokens, cost, and time. Zero configuration.**
+> **See how much your Claude AI sessions spend on file exploration — in tokens, cost, and time. Zero configuration.**
 
-Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects the file-exploration and repo-crawling patterns that [Vylor MCP](https://github.com/Vylor-AI/vylor-mcp-binaries) replaces, and reports how much of your spend was **avoidable waste**.
+Reads your Claude session `.jsonl` files (Claude Code CLI & Claude Desktop), detects the file-exploration and repo-crawling patterns that [Vylor MCP](https://github.com/Vylor-AI/vylor-mcp-binaries) replaces, and reports how much spend and time **Vylor MCP can save**.
 
 > [!NOTE]
-> The numbers are an *estimate of avoidable waste*, not a guaranteed saving. Vylor can't promise to eliminate all of it; this tool shows how much of your usage looks like exploration that a code-search tool could have handled.
+> The numbers are an *estimate of avoidable exploration*, not a guaranteed saving. Vylor can't promise to eliminate all of it; this tool shows how much of your usage looks like exploration that a code-search tool could have handled.
 
 ---
 
@@ -82,37 +82,41 @@ Session files are read locally. No data is sent anywhere.
 
 ## Example Output
 
-Default: one table, one hint.
+Default: compact summary with activity & token cost breakdowns.
 
+```text
+                           VYLOR MCP SAVINGS ESTIMATE                          
+        Analyzed: 11 session(s)  |  (All-time) 2026-08-24 to 2026-09-22        
+
+    +--------------------------------------------------------------------+     
+    |                     |            Cost |        Tokens |       Time |     
+    |---------------------+-----------------+---------------+------------|     
+    | Total               |         $5.4083 |        20.53M |        33m |     
+    | Vylor MCP savings   | $1.0586 (19.6%) | 5.54M (27.0%) | 8m (22.9%) |     
+    +--------------------------------------------------------------------+     
+Top savings sources: sub-agents 44% (Explore 100%)  |  directory listing 31%  |  searches 25%
+ Tool calls (613): Read 58% | Search 25% | Write 11% | Commands 4% | Sub-agent 1%
+    Cost breakdown: cache_read 48% | cache_creation 27% | output_tokens 25% (thinking_tokens 26%)
+                           Run with -d for details.
 ```
-                              AGENT OVERHEAD ESTIMATE
-                      Analyzed: 5 session(s)  |  Last 30 days
 
-     +--------------------------------------------------------------------+
-     |                     |            Cost |        Tokens |       Time |
-     |---------------------+-----------------+---------------+------------|
-     | Total               |         $2.6576 |         6.14M |        11m |
-     | Avoidable overhead  | $2.2445 (84.5%) | 5.39M (87.8%) | 9m (83.2%) |
-     +--------------------------------------------------------------------+
-                      Top overhead sources: sub-agents 98%
-                            Run with -d for details.
-```
+- **Total** is what the analyzed sessions cost, in cost, tokens, and time.
+- **Vylor MCP savings** is the portion spent on exploration and reconnaissance that Vylor tools make unnecessary.
+- **Top savings sources** tells you what contributes most to savings (e.g. Explore sub-agents, searches, directory listing).
+- **Tool calls** summarizes tool usage across core categories (`Read`, `Search`, `Commands`, `Write`, and background sub-agents).
+- **Cost breakdown** breaks down token costs across prompt caching (`cache_read`, `cache_creation`) and model outputs (`output_tokens` including `thinking_tokens`).
 
-- **Total** is what the analyzed sessions cost, in cost, tokens and time.
-- **Avoidable overhead** is the portion spent on exploration and reconnaissance that Vylor tools make unnecessary.
-- **Top overhead sources** tells you what contributes most to the overhead.
-
-`-d` adds overhead by source (cost, tokens, time), a breakdown by model, and the top sessions by overhead.
+`-d` adds savings by source (cost, tokens, time), a breakdown by model, and the top sessions by savings.
 
 ---
 
-## How Overhead Is Estimated
+## How Savings Are Estimated
 
 A turn counts as avoidable overhead when it is one of:
 
 | Source | What counts |
 |---|---|
-| **Sub-agents** | Every turn of a background sub-agent (e.g. `Explore` agents spawned via the `Agent` tool). Whole turn: cost, tokens, time. |
+| **Sub-agents** | Turns from **Explore** background sub-agents (spawned via `Agent` or `Task`). `Plan` sub-agents are retained in the baseline. Whole turn: cost, tokens, time. |
 | **Searches** | `Grep`, `grep_search`, `ripgrep`, or a shell command using `grep` / `rg` / `findstr` / `Select-String`. |
 | **Directory listing** | `Glob`, `list_dir`, `LS`, or a shell command using `find` / `ls` / `tree` / `dir` / `Get-ChildItem`. |
 
@@ -120,7 +124,7 @@ Rules for main-agent turns:
 
 - **Pure exploration only.** Every tool call in the turn must be exploration. A turn that also edits files, builds, or runs tests is not counted.
 - **Shell commands are inspected.** `Bash` / `PowerShell` count only when the command is exploration (`cd src && grep -rn foo . | head`). `git commit`, `npm test` or `git log | grep fix` do not.
-- For an overhead main-agent turn, the output tokens and the prompt-cache reads it caused are counted. For a sub-agent turn, everything is counted.
+- For an overhead main-agent turn, the output tokens and the prompt-cache reads it caused are counted. For an Explore sub-agent turn, everything is counted.
 
 ### Avoidable time
 

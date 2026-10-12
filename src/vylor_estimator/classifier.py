@@ -75,7 +75,7 @@ class PatternTurnClassifier(ITurnClassifier):
         self.skipped_sessions: set[str] = set()
 
     def is_vylor_tool(self, name: str) -> bool:
-        n = name.lower().strip()
+        n = (name or "").lower().strip()
         return (
             n.startswith(("mcp__vylor__", "vylor__"))
             or n in self.vylor_tools
@@ -83,7 +83,7 @@ class PatternTurnClassifier(ITurnClassifier):
 
     def _tool_call_source(self, tc: ToolCall) -> str | None:
         """Exploration source of one tool call, or None if it is not pure exploration."""
-        name = tc.name.lower().strip()
+        name = (tc.name or "").lower().strip()
         if name not in self.shell_exec_tools:
             return None
         if name in _SEARCH_TOOLS:
@@ -95,7 +95,8 @@ class PatternTurnClassifier(ITurnClassifier):
         return None
 
     def classify_turn(self, turn: Turn) -> ClassifiedTurn:
-        sub_source = SOURCE_SUBAGENTS if turn.is_subagent else None
+        is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
+        sub_source = SOURCE_SUBAGENTS if is_explore_sub else None
 
         if any(self.is_vylor_tool(tc.name) for tc in turn.tool_calls):
             return ClassifiedTurn(turn=turn, vylor_intercept=False, source=sub_source)
