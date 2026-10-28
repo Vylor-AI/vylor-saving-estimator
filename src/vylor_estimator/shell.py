@@ -6,9 +6,9 @@ from typing import Any
 SOURCE_SEARCH = "Searches"
 SOURCE_LIST = "Directory listing"
 
-_SOURCE_PRIORITY: tuple[str, ...] = (SOURCE_SEARCH, SOURCE_LIST)
+_SOURCE_PRIORITY: tuple[str, ...] = ("Sub-agents", SOURCE_SEARCH, SOURCE_LIST)
 
-_COMMAND_ARG_KEYS: tuple[str, ...] = ("command", "CommandLine", "cmd", "script")
+_COMMAND_ARG_KEYS: tuple[str, ...] = ("command", "CommandLine", "cmd", "script", "argv", "args")
 
 _SEARCH_COMMANDS: frozenset[str] = frozenset([
     "grep", "egrep", "fgrep", "rg", "ag", "ack", "findstr", "select-string", "sls",
@@ -36,12 +36,14 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     Split a shell command into ``(segment, is_pipe_stage)`` pairs.
 
     Splits on ``&&``, ``||``, ``;``, newlines (new command) and ``|`` (pipe
-    stage), ignoring separators inside single or double quotes so patterns
-    like ``grep "a|b" file`` stay intact.
+    stage), ignoring separators inside single or double quotes and curly braces
+    so patterns like ``grep "a|b" file`` or ``ForEach-Object { $n++; ... }``
+    stay intact.
     """
     segments: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote: str | None = None
+    brace_depth = 0
     piped = False
     i, n = 0, len(command)
 
@@ -66,6 +68,21 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
             continue
         if ch in ('"', "'"):
             quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            if brace_depth > 0:
+                brace_depth -= 1
+            buf.append(ch)
+            i += 1
+            continue
+        if brace_depth > 0:
             buf.append(ch)
             i += 1
             continue
@@ -103,6 +120,8 @@ def _command_word(segment: str) -> tuple[str, list[str]]:
 def _segment_source(word: str, args: list[str]) -> str | None:
     """Classify one command word as an exploration source, or None."""
     if word in _SEARCH_COMMANDS:
+        if word == "rg" and any(a == "--files" for a in args):
+            return SOURCE_LIST
         return SOURCE_SEARCH
     if word in _LIST_COMMANDS:
         if word == "find" and any(a in ("-delete", "-exec", "-execdir") for a in args):
@@ -147,12 +166,31 @@ def classify_command(command: str) -> str | None:
     return _best_source(found)
 
 
+def _unwrap_argv(argv: list[Any]) -> str:
+    """Unwrap shell wrapper argv lists like ['bash', '-lc', '...'] or ['pwsh', '-Command', '...']."""
+    str_argv = [str(x) for x in argv if x is not None]
+    if not str_argv:
+        return ""
+    for i, arg in enumerate(str_argv[:-1]):
+        if arg.lower() in ("-c", "-lc", "-command"):
+            return str_argv[i + 1]
+    return " ".join(f'"{a}"' if " " in a else a for a in str_argv)
+
+
 def extract_command(args: dict[str, Any]) -> str:
     """Extract shell command string from tool args across different schemas."""
     if not isinstance(args, dict):
         return ""
+    if isinstance(args.get("action"), dict):
+        action_cmd = extract_command(args["action"])
+        if action_cmd:
+            return action_cmd
     for key in _COMMAND_ARG_KEYS:
         value = args.get(key)
         if isinstance(value, str) and value.strip():
             return value
+        if isinstance(value, (list, tuple)) and value:
+            unwrapped = _unwrap_argv(list(value))
+            if unwrapped.strip():
+                return unwrapped
     return ""

@@ -105,3 +105,33 @@ def test_cli_debug_flag_passed_to_estimator():
         mock_create.reset_mock()
         result = runner.invoke(main, [])
         assert mock_create.call_args.kwargs["debug"] is False
+
+
+def test_cli_agent_flag_passed_to_estimator():
+    runner = CliRunner()
+    with patch("vylor_estimator.cli.create_estimator") as mock_create:
+        mock_create.return_value = MagicMock()
+
+        # Default is "all"
+        result = runner.invoke(main, [])
+        assert result.exit_code == 0
+        assert mock_create.call_args.kwargs["agent"] == "all"
+
+        # Explicit "codex"
+        mock_create.reset_mock()
+        result = runner.invoke(main, ["--agent", "codex"])
+        assert result.exit_code == 0
+        assert mock_create.call_args.kwargs["agent"] == "codex"
+
+        # Explicit "claude"
+        mock_create.reset_mock()
+        result = runner.invoke(main, ["--agent", "claude"])
+        assert result.exit_code == 0
+        assert mock_create.call_args.kwargs["agent"] == "claude"
+
+
+def test_cli_invalid_agent_choice():
+    runner = CliRunner()
+    result = runner.invoke(main, ["--agent", "invalid_agent"])
+    assert result.exit_code != 0
+    assert "Invalid value for '--agent'" in result.output

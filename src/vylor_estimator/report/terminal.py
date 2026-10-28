@@ -68,8 +68,15 @@ class TerminalReportRenderer(IReportRenderer):
         else:
             date_str = date_range_label
 
+        if len(agg.by_agent) > 1:
+            agents_label = " (" + ", ".join(k.capitalize() for k in sorted(agg.by_agent.keys())) + ")"
+        elif len(agg.by_agent) == 1:
+            agents_label = f" ({next(iter(agg.by_agent)).capitalize()})"
+        else:
+            agents_label = ""
+
         c.print(
-            f"[dim]Analyzed: {len(report.by_session)} session(s)  |  {date_str}[/dim]",
+            f"[dim]Analyzed: {len(report.by_session)} session(s){agents_label}  |  {date_str}[/dim]",
             justify="center",
         )
         c.print()
@@ -210,6 +217,28 @@ class TerminalReportRenderer(IReportRenderer):
                     f"{_pct(info['cost'], total_cost):.1f}%",
                 )
             c.print(t)
+            c.print()
+
+        if len(agg.by_agent) > 1:
+            c.print(Rule(f"[bold {ACCENT}]Breakdown by Agent", style=ACCENT))
+            t_agent = Table(box=box.SIMPLE_HEAD, header_style="bold white",
+                            border_style="dim", expand=True)
+            t_agent.add_column("Agent",         style="bold white")
+            t_agent.add_column("Turns",         justify="right")
+            t_agent.add_column("Baseline Cost", justify="right", style="yellow")
+            t_agent.add_column("Savings",       justify="right", style="green")
+            t_agent.add_column("% Savings",     justify="right", style="cyan")
+
+            for agent_name, info in sorted(agg.by_agent.items(), key=lambda x: -x[1]["baseline_cost"]):
+                pct = _pct(info["saved_cost"], info["baseline_cost"]) if info["baseline_cost"] > 0 else 0.0
+                t_agent.add_row(
+                    agent_name.capitalize(),
+                    str(info["turns"]),
+                    f"${info['baseline_cost']:,.4f}",
+                    f"${info['saved_cost']:,.4f}",
+                    f"{pct:.1f}%",
+                )
+            c.print(t_agent)
             c.print()
 
         if agg.by_model:

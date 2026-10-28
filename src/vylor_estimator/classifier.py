@@ -29,12 +29,17 @@ _SEARCH_TOOLS: frozenset[str] = frozenset(["grep", "grep_search", "ripgrep"])
 _LIST_TOOLS: frozenset[str] = frozenset(["glob", "list_dir", "ls", "find"])
 
 # Shell tools: only wasteful when the command itself is exploration.
-_SHELL_TOOLS: frozenset[str] = frozenset(["bash", "powershell", "run_command", "cmd"])
+_SHELL_TOOLS: frozenset[str] = frozenset([
+    "bash", "powershell", "run_command", "cmd",
+    "exec_command", "shell", "shell_command", "local_shell",
+])
 
 _SHELL_EXEC_TOOLS: frozenset[str] = frozenset([
     "bash", "powershell", "run_command", "cmd",
+    "exec_command", "shell", "shell_command", "local_shell",
     "list_dir", "ls", "find", "glob",
     "grep", "grep_search", "ripgrep",
+    "wait", "wait_agent",
 ])
 
 _VYLOR_TOOLS: frozenset[str] = frozenset([
@@ -90,6 +95,8 @@ class PatternTurnClassifier(ITurnClassifier):
             return SOURCE_SEARCH
         if name in _LIST_TOOLS:
             return SOURCE_LIST
+        if name in ("wait", "wait_agent"):
+            return tc.args.get("inherits") if isinstance(tc.args, dict) else None
         if name in _SHELL_TOOLS:
             return classify_command(extract_command(tc.args))
         return None

@@ -15,7 +15,7 @@ from vylor_estimator.shell import (
 )
 
 READ_TOOLS: frozenset[str] = frozenset([
-    "read", "view_file", "notebookread",
+    "read", "view_file", "notebookread", "view_image",
 ])
 SEARCH_TOOLS: frozenset[str] = frozenset([
     "grep", "glob", "ls", "list_dir", "grep_search", "ripgrep", "find_by_name",
@@ -26,16 +26,17 @@ WRITE_TOOLS: frozenset[str] = frozenset([
 ])
 SHELL_TOOLS: frozenset[str] = frozenset([
     "bash", "powershell", "run_command", "cmd",
+    "exec_command", "shell", "shell_command", "local_shell",
 ])
 SUBAGENT_TOOLS: frozenset[str] = frozenset([
-    "task", "agent",
+    "task", "agent", "spawn_agent", "wait_agent", "send_message",
 ])
 WEB_TOOLS: frozenset[str] = frozenset([
-    "webfetch", "websearch",
+    "webfetch", "websearch", "web_search",
 ])
 
 _READ_COMMANDS: frozenset[str] = frozenset([
-    "cat", "type", "get-content", "gc", "head", "tail", "less", "more",
+    "cat", "type", "get-content", "gc", "head", "tail", "less", "more", "sed", "nl",
 ])
 
 
@@ -52,6 +53,14 @@ def classify_tool_call(name: str, args: dict | None = None) -> str:
         return "Sub-agent"
     if n in WEB_TOOLS:
         return "Web"
+    if n == "wait":
+        args_dict = args if isinstance(args, dict) else {}
+        inh = args_dict.get("inherits")
+        if inh in ("Searches", "Directory listing"):
+            return "Search"
+        if inh == "Sub-agents":
+            return "Sub-agent"
+        return "Commands"
     if n in SHELL_TOOLS:
         args_dict = args if isinstance(args, dict) else {}
         cmd = extract_command(args_dict)

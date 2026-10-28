@@ -38,6 +38,7 @@ class Turn:
     cost: float
     is_subagent: bool
     subagent_type: str | None = None
+    agent: str = "claude"
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -236,6 +237,55 @@ class ClaudeJsonlParser(ISessionParser):
         if skipped:
             import sys
             print(f"[dim]Skipped {skipped} malformed turn(s).[/dim]", file=sys.stderr)
+
+        turns.sort(key=lambda t: t.timestamp or datetime.min.replace(tzinfo=timezone.utc))
+        return turns
+
+
+def _is_codex_file(path: Path) -> bool:
+    """Check if the first non-empty line of a jsonl file indicates a Codex session."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    return '"type":"session_meta"' in line or '"type": "session_meta"' in line
+    except OSError:
+        pass
+    return False
+
+
+class CompositeSessionParser(ISessionParser):
+    """Sniffs and dispatches session files to ClaudeJsonlParser or CodexRolloutParser."""
+
+    def __init__(
+        self,
+        pricing_calculator: IPricingCalculator | None = None,
+        claude_parser: ISessionParser | None = None,
+        codex_parser: ISessionParser | None = None,
+    ) -> None:
+        from vylor_estimator.codex_parser import CodexRolloutParser
+        from vylor_estimator.pricing import RoutingPricingCalculator
+
+        pricing = pricing_calculator or RoutingPricingCalculator()
+        self.claude_parser = claude_parser or ClaudeJsonlParser(pricing_calculator=pricing)
+        self.codex_parser = codex_parser or CodexRolloutParser(pricing_calculator=pricing)
+
+    def parse(self, paths: list[Path]) -> list[Turn]:
+        claude_paths: list[Path] = []
+        codex_paths: list[Path] = []
+
+        for p in paths:
+            if _is_codex_file(p):
+                codex_paths.append(p)
+            else:
+                claude_paths.append(p)
+
+        turns: list[Turn] = []
+        if claude_paths:
+            turns.extend(self.claude_parser.parse(claude_paths))
+        if codex_paths:
+            turns.extend(self.codex_parser.parse(codex_paths))
 
         turns.sort(key=lambda t: t.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return turns

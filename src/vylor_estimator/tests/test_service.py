@@ -7,10 +7,13 @@ import pytest
 
 from vylor_estimator.classifier import PatternTurnClassifier
 from vylor_estimator.discovery import (
-    ClaudeSessionDiscoverer,
+    CompositeDiscoverer,
     ISessionDiscoverer,
 )
-from vylor_estimator.parser import ClaudeJsonlParser
+from vylor_estimator.parser import (
+    ClaudeJsonlParser,
+    CompositeSessionParser,
+)
 from vylor_estimator.pricing import IPricingCalculator
 from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.report.terminal import TerminalReportRenderer
@@ -105,11 +108,42 @@ def test_create_estimator_composition_root():
     service = create_estimator(path=FIXTURES / "sample_session.jsonl", show_progress=False)
 
     assert isinstance(service, EstimatorService)
-    assert isinstance(service.discoverer, ClaudeSessionDiscoverer)
-    assert isinstance(service.parser, ClaudeJsonlParser)
+    assert isinstance(service.discoverer, CompositeDiscoverer)
+    assert isinstance(service.parser, CompositeSessionParser)
     assert isinstance(service.classifier, PatternTurnClassifier)
     assert isinstance(service.savings_engine, ConservativeSavingsEngine)
     assert isinstance(service.renderer, TerminalReportRenderer)
+
+
+def test_create_estimator_agent_filter():
+    """Verify create_estimator configures agent filtering in CompositeDiscoverer."""
+    svc_all = create_estimator(path=FIXTURES, agent="all", show_progress=False)
+    assert isinstance(svc_all.discoverer, CompositeDiscoverer)
+    assert svc_all.discoverer.agent == "all"
+
+    svc_codex = create_estimator(path=FIXTURES, agent="codex", show_progress=False)
+    assert isinstance(svc_codex.discoverer, CompositeDiscoverer)
+    assert svc_codex.discoverer.agent == "codex"
+
+    svc_claude = create_estimator(path=FIXTURES, agent="claude", show_progress=False)
+    assert isinstance(svc_claude.discoverer, CompositeDiscoverer)
+    assert svc_claude.discoverer.agent == "claude"
+
+
+def test_estimator_service_end_to_end_codex():
+    """Verify EstimatorService end-to-end execution on a Codex rollout session."""
+    renderer_spy = RecordingRenderer()
+    service = create_estimator(
+        path=FIXTURES / "sample_codex_session.jsonl",
+        renderer=renderer_spy,
+        show_progress=False,
+    )
+    report = service.run(date_filter=DateFilter.resolve(all_time=True))
+
+    assert report.total.turns_analyzed > 0
+    assert "codex" in report.total.by_agent
+    assert report.total.by_agent["codex"]["turns"] == report.total.turns_analyzed
+    assert len(renderer_spy.rendered_reports) == 1
 
 
 def test_date_filter_cutoff_calculations():

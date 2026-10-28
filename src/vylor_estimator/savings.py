@@ -80,6 +80,9 @@ class Aggregate:
     # Per-model breakdown
     by_model: dict[str, dict] = field(default_factory=dict)
 
+    # Per-agent breakdown (e.g. claude, codex)
+    by_agent: dict[str, dict] = field(default_factory=dict)
+
     # Waste attribution: source -> {turns, cost, tokens, seconds}
     by_source: dict[str, dict] = field(default_factory=dict)
 
@@ -226,6 +229,20 @@ class ConservativeSavingsEngine(ISavingsEngine):
         if ts.saved_cost > 0 or ts.total_saved_tokens > 0:
             agg.by_model[model_key]["saved_cost"] += ts.saved_cost
             agg.by_model[model_key]["saved_tokens"] += ts.total_saved_tokens
+
+        agent_key = getattr(turn, "agent", "claude") or "claude"
+        if agent_key not in agg.by_agent:
+            agg.by_agent[agent_key] = {
+                "turns": 0,
+                "baseline_cost": 0.0,
+                "saved_cost": 0.0,
+                "saved_tokens": 0,
+            }
+        agg.by_agent[agent_key]["turns"] += 1
+        agg.by_agent[agent_key]["baseline_cost"] += turn.cost
+        if ts.saved_cost > 0 or ts.total_saved_tokens > 0:
+            agg.by_agent[agent_key]["saved_cost"] += ts.saved_cost
+            agg.by_agent[agent_key]["saved_tokens"] += ts.total_saved_tokens
 
     def calculate(self, classified_turns: list[ClassifiedTurn]) -> SavingsReport:
         """

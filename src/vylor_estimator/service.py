@@ -12,16 +12,16 @@ from vylor_estimator.classifier import (
     PatternTurnClassifier,
 )
 from vylor_estimator.discovery import (
-    ClaudeSessionDiscoverer,
+    CompositeDiscoverer,
     ISessionDiscoverer,
 )
 from vylor_estimator.parser import (
-    ClaudeJsonlParser,
+    CompositeSessionParser,
     ISessionParser,
 )
 from vylor_estimator.pricing import (
-    ClaudePricingCalculator,
     IPricingCalculator,
+    RoutingPricingCalculator,
 )
 from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.report.terminal import TerminalReportRenderer
@@ -139,6 +139,7 @@ class EstimatorService:
 
 def create_estimator(
     path: str | Path | None = None,
+    agent: str = "all",
     pricing_calculator: IPricingCalculator | None = None,
     discoverer: ISessionDiscoverer | None = None,
     parser: ISessionParser | None = None,
@@ -148,11 +149,11 @@ def create_estimator(
     show_progress: bool = True,
     debug: bool = False,
 ) -> EstimatorService:
-    pricing = pricing_calculator or ClaudePricingCalculator()
-    disc = discoverer or ClaudeSessionDiscoverer(explicit_path=path)
-    pars = parser or ClaudeJsonlParser(pricing_calculator=pricing)
+    pricing = pricing_calculator or RoutingPricingCalculator()
+    disc = discoverer or CompositeDiscoverer(explicit_path=path, agent=agent)
+    pars = parser or CompositeSessionParser(pricing_calculator=pricing)
     clsf = classifier or PatternTurnClassifier()
-    seng = savings_engine or ConservativeSavingsEngine()
+    seng = savings_engine or ConservativeSavingsEngine(pricing_calculator=pricing)
     rend = renderer or TerminalReportRenderer(debug=debug)
 
     console = Console()

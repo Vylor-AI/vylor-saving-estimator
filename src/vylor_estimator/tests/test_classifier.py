@@ -279,3 +279,34 @@ def test_text_only_turns_never_intercepted(
     for ct in classified:
         if not ct.turn.tool_calls:
             assert ct.vylor_intercept is False
+
+
+def test_rg_files_is_directory_listing():
+    assert classify_command('rg --files -g "!node_modules"') == SOURCE_LIST
+    assert classify_command('rg -n "pattern" src') == SOURCE_SEARCH
+
+
+def test_powershell_script_block_not_split():
+    # Semicolon inside curly braces should not split the block into invalid commands
+    cmd = "Get-Content foo.tsx | ForEach-Object { $n++; '{0}: {1}' -f $n, $_ }"
+    # Should not crash or treat {0}: as an unrecognized command
+    assert classify_command(cmd) is None  # Get-Content is read, not pure search
+
+
+def test_extract_command_argv_unwrapping():
+    from vylor_estimator.shell import extract_command
+    assert extract_command({"command": ["bash", "-lc", "rg -n foo src"]}) == "rg -n foo src"
+    assert extract_command({"command": ["pwsh.exe", "-Command", "Get-ChildItem -Force"]}) == "Get-ChildItem -Force"
+    assert extract_command({"action": {"command": ["rg", "foo"]}}) == "rg foo"
+
+
+def test_codex_wait_inherits_source(classifier: PatternTurnClassifier):
+    turn = _turn("t_wait", [("wait", {"inherits": SOURCE_SEARCH})])
+    ct = classifier.classify_turn(turn)
+    assert ct.vylor_intercept is True
+    assert ct.source == SOURCE_SEARCH
+
+    turn_poll = _turn("t_poll", [("wait_agent", {"inherits": SOURCE_SUBAGENTS})])
+    ct_poll = classifier.classify_turn(turn_poll)
+    assert ct_poll.vylor_intercept is True
+    assert ct_poll.source == SOURCE_SUBAGENTS
