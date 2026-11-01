@@ -13,15 +13,13 @@ from vylor_estimator.shell import (
     _command_word,
     _split_command,
     classify_command,
+    is_read_only_command,
 )
 
 NESTED_TOOL_RE = re.compile(r"tools\.([A-Za-z0-9_]+)\s*\(")
 CELL_ID_RE = re.compile(r"cell ID (\d+)", re.IGNORECASE)
 
-_READ_COMMAND_WORDS = frozenset([
-    "cat", "type", "get-content", "gc", "head", "tail", "less", "more",
-    "sed", "nl", "foreach-object", "select-object", "%",
-])
+_is_read_only_command = is_read_only_command
 
 
 def _extract_json_object(src: str, start: int) -> dict[str, Any] | None:
@@ -66,18 +64,6 @@ def _extract_nested_calls(js_code: str) -> list[tuple[str, dict[str, Any]]]:
         args = _extract_json_object(js_code, j) or {}
         calls.append((tool_name, args))
     return calls
-
-
-def _is_read_only_command(cmd: str) -> bool:
-    """True if every segment of a command is exploration or a file read."""
-    # Hide internal semicolons in powershell script blocks
-    normalized = re.sub(r"\{[^{}]*\}", lambda m: m.group(0).replace(";", " "), cmd)
-    for seg, _piped in _split_command(normalized):
-        w, _args = _command_word(seg)
-        if not w or classify_command(seg) or w in _READ_COMMAND_WORDS or w.startswith("$") or w.startswith("{"):
-            continue
-        return False
-    return True
 
 
 class CodexRolloutParser(ISessionParser):

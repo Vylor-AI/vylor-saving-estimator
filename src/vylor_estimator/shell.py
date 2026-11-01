@@ -26,6 +26,10 @@ _FILTER_COMMANDS: frozenset[str] = frozenset([
 _NEUTRAL_COMMANDS: frozenset[str] = frozenset([
     "cd", "pushd", "popd", "pwd", "echo", "set-location", "sl", "write-host", "write-output",
 ])
+_READ_COMMAND_WORDS: frozenset[str] = frozenset([
+    "cat", "type", "get-content", "gc", "head", "tail", "less", "more",
+    "sed", "nl", "foreach-object", "select-object", "%",
+])
 _COMMAND_PREFIXES: frozenset[str] = frozenset(["sudo", "time", "command", "builtin", "&", "nohup"])
 
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -194,3 +198,16 @@ def extract_command(args: dict[str, Any]) -> str:
             if unwrapped.strip():
                 return unwrapped
     return ""
+
+
+def is_read_only_command(cmd: str) -> bool:
+    """True if every segment of a command is exploration or a file read."""
+    normalized = re.sub(r"\{[^{}]*\}", lambda m: m.group(0).replace(";", " "), cmd)
+    for seg, _piped in _split_command(normalized):
+        w, args = _command_word(seg)
+        if w == "sed" and any(a.startswith("-i") for a in args):
+            return False
+        if not w or classify_command(seg) or w in _READ_COMMAND_WORDS or w.startswith("$") or w.startswith("{"):
+            continue
+        return False
+    return True

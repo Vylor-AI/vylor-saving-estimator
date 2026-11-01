@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 
+from vylor_estimator.classifier import NON_EXPLORE_SUBAGENT_TYPES
 from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.savings import SavingsReport
 
@@ -165,7 +166,7 @@ class TerminalReportRenderer(IReportRenderer):
                 sub_types = {
                     st: cnt
                     for st, cnt in report.activity.subagent_types.items()
-                    if st != "Plan"
+                    if st not in NON_EXPLORE_SUBAGENT_TYPES
                 }
                 if sub_types:
                     tot_sub = sum(sub_types.values())

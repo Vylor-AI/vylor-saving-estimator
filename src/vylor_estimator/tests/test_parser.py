@@ -179,3 +179,113 @@ def test_corrupted_session_null_usage(tmp_path):
     assert good_turn is not None
     assert good_turn.input_tokens == 100
 
+
+
+def test_general_purpose_subagent_behavioral_classification(tmp_path, parser: ClaudeJsonlParser):
+    """
+    A read-only general-purpose sub-agent remains an explore sub-agent ('general-purpose'),
+    whereas a mutating general-purpose sub-agent (e.g. calling Edit or npm test) is
+    reclassified as 'Worker' (along with its parent Task/Agent call).
+    """
+    import json
+
+    parent_sess = "sess-gp"
+    sess_dir = tmp_path / parent_sess
+    sub_dir = sess_dir / "subagents"
+    sub_dir.mkdir(parents=True)
+
+    parent_file = sess_dir.with_suffix(".jsonl")
+    sub_readonly_file = sub_dir / "agent-ro1.jsonl"
+    sub_worker_file = sub_dir / "agent-wk1.jsonl"
+
+    parent_events = [
+        {
+            "type": "assistant",
+            "uuid": "p_msg_1",
+            "timestamp": "2026-01-01T10:00:00Z",
+            "message": {
+                "id": "p_msg_1",
+                "model": "claude-sonnet-4.5",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tuid_ro",
+                        "name": "Agent",
+                        "input": {"subagent_type": "general-purpose", "prompt": "read code"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tuid_wk",
+                        "name": "Agent",
+                        "input": {"subagent_type": "general-purpose", "prompt": "edit code"},
+                    },
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "u_res_ro",
+            "timestamp": "2026-01-01T10:02:00Z",
+            "toolUseResult": {"agentId": "ro1", "subagent_type": "general-purpose"},
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tuid_ro", "content": "done"}]
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "u_res_wk",
+            "timestamp": "2026-01-01T10:03:00Z",
+            "toolUseResult": {"agentId": "wk1", "subagent_type": "general-purpose"},
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tuid_wk", "content": "done"}]
+            },
+        },
+    ]
+    parent_file.write_text("\n".join(json.dumps(e) for e in parent_events) + "\n", encoding="utf-8")
+
+    # Read-only sub-agent: uses Read and read-only Bash
+    ro_msg = {
+        "type": "assistant",
+        "uuid": "ro_turn_1",
+        "timestamp": "2026-01-01T10:01:00Z",
+        "message": {
+            "id": "ro_turn_1",
+            "model": "claude-sonnet-4.5",
+            "usage": {"input_tokens": 500, "output_tokens": 100},
+            "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}},
+                {"type": "tool_use", "name": "Bash", "input": {"command": "cat b.py"}},
+            ],
+        },
+    }
+    sub_readonly_file.write_text(json.dumps(ro_msg) + "\n", encoding="utf-8")
+
+    # Mutating sub-agent: uses Grep then Edit
+    wk_msg = {
+        "type": "assistant",
+        "uuid": "wk_turn_1",
+        "timestamp": "2026-01-01T10:01:30Z",
+        "message": {
+            "id": "wk_turn_1",
+            "model": "claude-sonnet-4.5",
+            "usage": {"input_tokens": 500, "output_tokens": 100},
+            "content": [
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "a.py"}},
+            ],
+        },
+    }
+    sub_worker_file.write_text(json.dumps(wk_msg) + "\n", encoding="utf-8")
+
+    turns = parser.parse([parent_file, sub_readonly_file, sub_worker_file])
+    by_id = {t.turn_id: t for t in turns}
+
+    assert by_id["ro_turn_1"].is_subagent is True
+    assert by_id["ro_turn_1"].subagent_type == "general-purpose"
+
+    assert by_id["wk_turn_1"].is_subagent is True
+    assert by_id["wk_turn_1"].subagent_type == "Worker"
+
+    parent_turn = by_id["p_msg_1"]
+    assert parent_turn.tool_calls[0].args["subagent_type"] == "general-purpose"
+    assert parent_turn.tool_calls[1].args["subagent_type"] == "Worker"

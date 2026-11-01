@@ -13,15 +13,24 @@ from vylor_estimator.shell import (
 )
 
 SOURCE_SUBAGENTS = "Sub-agents"
+NON_EXPLORE_SUBAGENT_TYPES: frozenset[str] = frozenset(["Plan", "Worker"])
+
+
+def is_explore_subagent(turn: Turn) -> bool:
+    """True if the turn belongs to a read-only exploration sub-agent (Tier 1)."""
+    return turn.is_subagent and (turn.subagent_type not in NON_EXPLORE_SUBAGENT_TYPES)
+
 
 __all__ = [
     "ClassifiedTurn",
     "ITurnClassifier",
+    "NON_EXPLORE_SUBAGENT_TYPES",
     "PatternTurnClassifier",
     "SOURCE_LIST",
     "SOURCE_SEARCH",
     "SOURCE_SUBAGENTS",
     "classify_command",
+    "is_explore_subagent",
 ]
 
 # Dedicated exploration tools (matched by tool name).
@@ -102,7 +111,7 @@ class PatternTurnClassifier(ITurnClassifier):
         return None
 
     def classify_turn(self, turn: Turn) -> ClassifiedTurn:
-        is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
+        is_explore_sub = is_explore_subagent(turn)
         sub_source = SOURCE_SUBAGENTS if is_explore_sub else None
 
         if any(self.is_vylor_tool(tc.name) for tc in turn.tool_calls):

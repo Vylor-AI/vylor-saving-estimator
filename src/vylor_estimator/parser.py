@@ -12,6 +12,27 @@ from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
 )
+from vylor_estimator.shell import extract_command, is_read_only_command
+
+_MUTATING_WRITE_TOOLS: frozenset[str] = frozenset([
+    "write", "edit", "multiedit", "notebookedit", "write_to_file",
+    "replace_file_content", "multi_replace_file_content", "apply_patch",
+])
+_SHELL_TOOLS: frozenset[str] = frozenset([
+    "bash", "powershell", "run_command", "cmd",
+    "exec_command", "shell", "shell_command", "local_shell",
+])
+
+
+def _is_mutating_tool_call(name: str, args: dict[str, Any]) -> bool:
+    """True if a tool call edits files or executes a non-read shell command."""
+    n = (name or "").lower().strip()
+    if n in _MUTATING_WRITE_TOOLS:
+        return True
+    if n in _SHELL_TOOLS:
+        cmd = extract_command(args if isinstance(args, dict) else {})
+        return not is_read_only_command(cmd)
+    return False
 
 
 @dataclass
@@ -68,6 +89,8 @@ class ClaudeJsonlParser(ISessionParser):
         message_order: list[str] = []
         tool_use_subagent_type: dict[str, str] = {}
         agent_id_to_subagent_type: dict[str, str] = {}
+        agent_id_to_tool_use_id: dict[str, str] = {}
+        tool_use_args_by_id: dict[str, dict[str, Any]] = {}
 
         # First pass: index all events
         for p in paths:
@@ -96,9 +119,18 @@ class ClaudeJsonlParser(ISessionParser):
 
                         tur = data.get("toolUseResult")
                         if isinstance(tur, dict) and tur.get("agentId"):
-                            aid = tur["agentId"]
+                            aid = str(tur["agentId"])
                             if tur.get("subagent_type"):
                                 agent_id_to_subagent_type[aid] = tur["subagent_type"]
+                            msg_content = (data.get("message") or {}).get("content")
+                            if isinstance(msg_content, list):
+                                for c_item in msg_content:
+                                    if isinstance(c_item, dict) and c_item.get("type") == "tool_result":
+                                        tuid = c_item.get("tool_use_id")
+                                        if tuid:
+                                            agent_id_to_tool_use_id[aid] = tuid
+                                            if aid not in agent_id_to_subagent_type and tuid in tool_use_subagent_type:
+                                                agent_id_to_subagent_type[aid] = tool_use_subagent_type[tuid]
 
                         content_str = data.get("content")
                         if isinstance(content_str, str) and "<task-id>" in content_str and "<tool-use-id>" in content_str:
@@ -109,6 +141,7 @@ class ClaudeJsonlParser(ISessionParser):
                                 tuid = tuid_m.group(1)
                                 if tuid in tool_use_subagent_type:
                                     agent_id_to_subagent_type[tid] = tool_use_subagent_type[tuid]
+                                agent_id_to_tool_use_id[tid] = tuid
 
                         if data.get("type") == "assistant" and "message" in data:
                             msg = data["message"]
@@ -146,6 +179,8 @@ class ClaudeJsonlParser(ISessionParser):
                                         st = args.get("subagent_type") or args.get("type")
                                         if st and item.get("id"):
                                             tool_use_subagent_type[item["id"]] = st
+                                        if item.get("id"):
+                                            tool_use_args_by_id[item["id"]] = args
 
                                     key = f"{name}:{json.dumps(args, sort_keys=True)}"
                                     if key not in {
@@ -162,6 +197,31 @@ class ClaudeJsonlParser(ISessionParser):
                 parent_event = events_by_uuid[parent_uuid]
                 if parent_event.get("type") in ("tool_result", "tool_use"):
                     entry["is_subagent"] = True
+
+        # Behavioral inspection for sub-agents (e.g., general-purpose):
+        # If a sub-agent mutates files or runs non-read shell commands, classify it as Worker.
+        mutated_subagents: set[str] = set()
+        for entry in messages_map.values():
+            if not entry.get("is_subagent"):
+                continue
+            has_mutation = any(
+                _is_mutating_tool_call(tc["name"], tc["args"])
+                for tc in entry["tool_calls_raw"]
+            )
+            if not has_mutation:
+                continue
+            sub_fid = entry.get("subagent_file_id")
+            if sub_fid:
+                mutated_subagents.add(sub_fid)
+            else:
+                entry["subagent_type_override"] = "Worker"
+
+        for sub_fid in mutated_subagents:
+            if agent_id_to_subagent_type.get(sub_fid) != "Plan":
+                agent_id_to_subagent_type[sub_fid] = "Worker"
+                tuid = agent_id_to_tool_use_id.get(sub_fid)
+                if tuid and tuid in tool_use_args_by_id:
+                    tool_use_args_by_id[tuid]["subagent_type"] = "Worker"
 
         turns: list[Turn] = []
         skipped = 0
@@ -208,8 +268,8 @@ class ClaudeJsonlParser(ISessionParser):
                     ephemeral_1h_tokens=e_1h,
                 )
 
-                subagent_type = None
-                if entry.get("subagent_file_id"):
+                subagent_type = entry.get("subagent_type_override")
+                if not subagent_type and entry.get("subagent_file_id"):
                     subagent_type = agent_id_to_subagent_type.get(entry["subagent_file_id"])
 
                 turns.append(Turn(

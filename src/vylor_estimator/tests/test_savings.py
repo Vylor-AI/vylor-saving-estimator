@@ -334,3 +334,41 @@ def test_by_source_sums_to_waste_totals(savings_engine: ConservativeSavingsEngin
     assert sum(b["seconds"] for b in by_source.values()) == pytest.approx(
         report.total.saved_seconds
     )
+
+
+def test_worker_subagent_only_saves_exploration_turns(
+    classifier: PatternTurnClassifier,
+    savings_engine: ConservativeSavingsEngine,
+):
+    """
+    A Worker subagent (e.g. a general-purpose subagent that edited files) must NOT
+    have its edit/read turns eliminated as Tier 1, but its pure search turns still
+    receive Tier 2 savings.
+    """
+    from vylor_estimator.parser import ToolCall
+
+    worker_edit = _make_turn(
+        "wk_edit", is_subagent=True, cost=0.07,
+        input_tokens=2_000, cache_read_tokens=1_000, cache_write_tokens=500, minute=0,
+    )
+    worker_edit.subagent_type = "Worker"
+    worker_edit.tool_calls = [ToolCall(name="Edit", args={"file_path": "a.py"})]
+
+    worker_search = _make_turn(
+        "wk_search", is_subagent=True, cost=0.05,
+        input_tokens=1_000, cache_read_tokens=2_000, cache_write_tokens=0, minute=1,
+    )
+    worker_search.subagent_type = "Worker"
+    worker_search.tool_calls = [ToolCall(name="Grep", args={"pattern": "foo"})]
+
+    classified = classifier.classify([worker_edit, worker_search])
+    report = savings_engine.calculate(classified)
+
+    ts_edit, ts_search = report.turn_savings
+    assert ts_edit.saved_cost == 0.0
+    assert ts_edit.total_saved_tokens == 0
+
+    assert ts_search.saved_cost > 0.0
+    assert ts_search.saved_cache_tokens == 2_000
+    assert ts_search.saved_input_tokens == 0
+    assert report.total.subagent_turns == 0

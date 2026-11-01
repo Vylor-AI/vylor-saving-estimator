@@ -10,7 +10,11 @@ from vylor_estimator.activity import (
     IActivityAnalyzer,
     ToolActivityAnalyzer,
 )
-from vylor_estimator.classifier import SOURCE_SUBAGENTS, ClassifiedTurn
+from vylor_estimator.classifier import (
+    SOURCE_SUBAGENTS,
+    ClassifiedTurn,
+    is_explore_subagent,
+)
 from vylor_estimator.parser import Turn
 from vylor_estimator.pricing import (
     ClaudePricingCalculator,
@@ -187,7 +191,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
         turn = ct.turn
 
         agg.turns_analyzed += 1
-        is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
+        is_explore_sub = is_explore_subagent(turn)
         if is_explore_sub:
             agg.subagent_turns += 1
 
@@ -265,7 +269,7 @@ class ConservativeSavingsEngine(ISavingsEngine):
 
         for ct in classified_turns:
             turn = ct.turn
-            is_explore_sub = turn.is_subagent and (turn.subagent_type != "Plan")
+            is_explore_sub = is_explore_subagent(turn)
 
             if is_explore_sub:
                 # Tier 1: explore subagent turn eliminated
