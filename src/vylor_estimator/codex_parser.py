@@ -10,8 +10,6 @@ from vylor_estimator.classifier import SOURCE_SUBAGENTS
 from vylor_estimator.parser import ISessionParser, ToolCall, Turn, _parse_iso
 from vylor_estimator.pricing import IPricingCalculator, RoutingPricingCalculator
 from vylor_estimator.shell import (
-    _command_word,
-    _split_command,
     classify_command,
     is_read_only_command,
 )

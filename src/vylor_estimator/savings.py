@@ -15,22 +15,25 @@ from vylor_estimator.classifier import (
     ClassifiedTurn,
     is_explore_subagent,
 )
-from vylor_estimator.parser import Turn
+from vylor_estimator.impact import ImpactReport
 from vylor_estimator.pricing import (
     ClaudePricingCalculator,
     IPricingCalculator,
 )
+from vylor_estimator.timing import MAX_TURN_SECONDS, turn_seconds
 
-MAX_TURN_SECONDS = 600.0
+__all__ = [
+    "MAX_TURN_SECONDS",
+    "SOURCE_OTHER",
+    "Aggregate",
+    "ConservativeSavingsEngine",
+    "ISavingsEngine",
+    "SavingsReport",
+    "TurnSavings",
+    "turn_seconds",
+]
 
 SOURCE_OTHER = "Other"
-
-
-def turn_seconds(turn: Turn) -> float:
-    """Duration of a turn in seconds: None counts as 0 and the value is clamped."""
-    if turn.duration_seconds is None:
-        return 0.0
-    return min(max(turn.duration_seconds, 0.0), MAX_TURN_SECONDS)
 
 
 @dataclass
@@ -145,6 +148,7 @@ class SavingsReport:
     by_day: dict[date, Aggregate]       # date -> Aggregate
     turn_savings: list[TurnSavings]
     activity: ActivityReport | None = None
+    impact: ImpactReport | None = None
 
 
 class ISavingsEngine(ABC):

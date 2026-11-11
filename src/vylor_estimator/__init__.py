@@ -1,4 +1,4 @@
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 from vylor_estimator.classifier import (
     ClassifiedTurn,
@@ -8,6 +8,12 @@ from vylor_estimator.classifier import (
 from vylor_estimator.discovery import (
     ClaudeSessionDiscoverer,
     ISessionDiscoverer,
+)
+from vylor_estimator.impact import (
+    GroupImpact,
+    IImpactAnalyzer,
+    ImpactReport,
+    SessionImpactAnalyzer,
 )
 from vylor_estimator.parser import (
     ClaudeJsonlParser,
@@ -56,6 +62,10 @@ __all__ = [
     "TurnSavings",
     "IReportRenderer",
     "TerminalReportRenderer",
+    "GroupImpact",
+    "IImpactAnalyzer",
+    "ImpactReport",
+    "SessionImpactAnalyzer",
     "DateFilter",
     "EstimatorService",
     "create_estimator",

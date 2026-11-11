@@ -15,6 +15,10 @@ from vylor_estimator.discovery import (
     CompositeDiscoverer,
     ISessionDiscoverer,
 )
+from vylor_estimator.impact import (
+    IImpactAnalyzer,
+    SessionImpactAnalyzer,
+)
 from vylor_estimator.parser import (
     CompositeSessionParser,
     ISessionParser,
@@ -85,6 +89,7 @@ class EstimatorService:
         classifier: ITurnClassifier,
         savings_engine: ISavingsEngine,
         renderer: IReportRenderer | None = None,
+        impact_analyzer: IImpactAnalyzer | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.discoverer = discoverer
@@ -92,6 +97,7 @@ class EstimatorService:
         self.classifier = classifier
         self.savings_engine = savings_engine
         self.renderer = renderer
+        self.impact_analyzer = impact_analyzer or SessionImpactAnalyzer()
         self.progress_callback = progress_callback
 
     def run(
@@ -122,13 +128,15 @@ class EstimatorService:
             )
 
         classified = self.classifier.classify(turns)
+        skipped_sessions = self.classifier.skipped_sessions
 
-        if self.progress_callback and getattr(self.classifier, "skipped_sessions", None):
-            skipped_count = len(self.classifier.skipped_sessions)
-            if skipped_count > 0:
-                self.progress_callback(f"Skipped {skipped_count} session(s) already using Vylor tools.")
+        if self.progress_callback and skipped_sessions:
+            self.progress_callback(
+                f"Skipped {len(skipped_sessions)} session(s) already using Vylor tools."
+            )
 
         report = self.savings_engine.calculate(classified)
+        report.impact = self.impact_analyzer.analyze(turns, set(skipped_sessions))
 
         label = date_filter.label if date_filter else "All-time"
         if self.renderer is not None:
@@ -146,6 +154,7 @@ def create_estimator(
     classifier: ITurnClassifier | None = None,
     savings_engine: ISavingsEngine | None = None,
     renderer: IReportRenderer | None = None,
+    impact_analyzer: IImpactAnalyzer | None = None,
     show_progress: bool = True,
     debug: bool = False,
 ) -> EstimatorService:
@@ -155,6 +164,7 @@ def create_estimator(
     clsf = classifier or PatternTurnClassifier()
     seng = savings_engine or ConservativeSavingsEngine(pricing_calculator=pricing)
     rend = renderer or TerminalReportRenderer(debug=debug)
+    imp = impact_analyzer or SessionImpactAnalyzer()
 
     console = Console()
     # Progress chatter is part of the detailed output; the default run stays quiet.
@@ -168,5 +178,6 @@ def create_estimator(
         classifier=clsf,
         savings_engine=seng,
         renderer=rend,
+        impact_analyzer=imp,
         progress_callback=progress_cb,
     )

@@ -8,10 +8,12 @@ from rich.rule import Rule
 from rich.table import Table
 
 from vylor_estimator.classifier import NON_EXPLORE_SUBAGENT_TYPES
+from vylor_estimator.impact import GroupImpact, ImpactReport
 from vylor_estimator.report.base import IReportRenderer
 from vylor_estimator.savings import SavingsReport
 
 ACCENT = "#6C47FF"
+IMPACT_ACCENT = "#10B981"
 
 
 def _fmt_tokens(n: int) -> str:
@@ -38,6 +40,18 @@ def _pct(part: float, whole: float) -> float:
     return round(part / whole * 100, 1) if whole else 0.0
 
 
+def _fmt_avg_cost(value: float | None) -> str:
+    """Average session cost: cents precision, or 4 decimals for sub-cent sessions."""
+    if value is None:
+        return "-"
+    return f"${value:,.2f}" if value >= 0.01 or value == 0 else f"${value:,.4f}"
+
+
+def _fmt_avg_time(seconds: float | None) -> str:
+    """Average agent-time, or ``n/a`` when there is nothing to average."""
+    return "n/a" if seconds is None else _fmt_time(seconds)
+
+
 class TerminalReportRenderer(IReportRenderer):
     """
     Renders the Vylor MCP savings estimate.
@@ -61,6 +75,10 @@ class TerminalReportRenderer(IReportRenderer):
 
         c.print()
         c.print(f"[bold white on {ACCENT}]  VYLOR MCP SAVINGS ESTIMATE  [/]", justify="center")
+        c.print(
+            "[dim]Estimated savings on sessions that did not use Vylor MCP[/dim]",
+            justify="center",
+        )
 
         if agg.first_turn_at is not None and agg.last_turn_at is not None:
             start_d = agg.first_turn_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
@@ -142,6 +160,9 @@ class TerminalReportRenderer(IReportRenderer):
             if cost_parts:
                 c.print("[dim]Cost breakdown: " + " | ".join(cost_parts) + "[/dim]", justify="center")
 
+        if report.impact is not None and report.impact.has_vylor_sessions:
+            self._render_impact(report.impact)
+
         if self.debug:
             self._render_details(report)
         else:
@@ -183,6 +204,83 @@ class TerminalReportRenderer(IReportRenderer):
         if not parts:
             return ""
         return "[dim]Top savings sources: " + "  |  ".join(parts) + "[/dim]"
+
+    @staticmethod
+    def _fmt_turns_to_first_edit(group: GroupImpact) -> str:
+        """Average turns to first edit, with the number of edit sessions it is based on."""
+        avg = group.avg_turns_to_first_edit
+        if avg is None:
+            return "n/a (of 0)"
+        value = f"{avg:.0f}" if avg >= 10 else f"{avg:.1f}"
+        return f"{value} (of {group.edit_sessions})"
+
+    def _render_impact(self, impact: ImpactReport) -> None:
+        """Sessions that used Vylor tools next to sessions that did not."""
+        c = self.console
+        without, with_ = impact.without_vylor, impact.with_vylor
+
+        c.print()
+        c.print()
+        c.print(f"[bold white on {IMPACT_ACCENT}]  VYLOR MCP IMPACT  [/]", justify="center")
+        c.print(
+            "[dim]Measured comparison: normal sessions vs. sessions using Vylor MCP[/dim]",
+            justify="center",
+        )
+        c.print()
+
+        table = Table(
+            box=box.ROUNDED, show_header=True,
+            header_style=f"bold {IMPACT_ACCENT}", border_style=IMPACT_ACCENT,
+        )
+        table.add_column("",              style="bold white", min_width=19)
+        table.add_column("Without Vylor", justify="right")
+        table.add_column("With Vylor",    justify="right")
+        table.add_column("",              justify="left", style="bold green")
+
+        cost_pct = impact.cost_improvement_pct
+        turns_pct = impact.turns_improvement_pct
+        time_pct = impact.time_to_first_edit_improvement_pct
+        edit_cost_pct = impact.cost_to_first_edit_improvement_pct
+
+        table.add_row("Sessions", str(without.sessions), str(with_.sessions), "")
+        table.add_row(
+            "Avg cost per session",
+            _fmt_avg_cost(without.avg_cost),
+            _fmt_avg_cost(with_.avg_cost),
+            f"({cost_pct:.0f}% lower)" if cost_pct is not None else "",
+        )
+        table.add_row(
+            "Avg turns to first edit",
+            self._fmt_turns_to_first_edit(without),
+            self._fmt_turns_to_first_edit(with_),
+            f"({turns_pct:.0f}% faster)" if turns_pct is not None else "",
+        )
+        table.add_row(
+            "Avg time to first edit",
+            _fmt_avg_time(without.avg_seconds_to_first_edit),
+            _fmt_avg_time(with_.avg_seconds_to_first_edit),
+            f"({time_pct:.0f}% faster)" if time_pct is not None else "",
+        )
+        table.add_row(
+            "Avg cost to first edit",
+            _fmt_avg_cost(without.avg_cost_to_first_edit),
+            _fmt_avg_cost(with_.avg_cost_to_first_edit),
+            f"({edit_cost_pct:.0f}% lower)" if edit_cost_pct is not None else "",
+        )
+        c.print(table, justify="center")
+
+        c.print(
+            "[dim]First-edit rows average edit sessions only "
+            "(sessions with at least one file edit).[/dim]",
+            justify="center",
+        )
+        if impact.is_early_results:
+            noun = "session" if with_.sessions == 1 else "sessions"
+            c.print(
+                f"[dim]Early results: based on {with_.sessions} Vylor {noun}.[/dim]",
+                justify="center",
+            )
+        c.print()
 
     def _render_details(self, report: SavingsReport) -> None:
         agg = report.total

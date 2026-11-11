@@ -69,6 +69,11 @@ class ClassifiedTurn:
 
 
 class ITurnClassifier(ABC):
+    @property
+    def skipped_sessions(self) -> set[str]:
+        """Session IDs excluded by the last classify() call (e.g. sessions already using Vylor)."""
+        return set()
+
     @abstractmethod
     def classify_turn(self, turn: Turn) -> ClassifiedTurn:
         """Classify a single turn."""
@@ -86,7 +91,15 @@ class PatternTurnClassifier(ITurnClassifier):
     ) -> None:
         self.shell_exec_tools = shell_exec_tools
         self.vylor_tools = vylor_tools
-        self.skipped_sessions: set[str] = set()
+        self._skipped_sessions: set[str] = set()
+
+    @property
+    def skipped_sessions(self) -> set[str]:
+        return self._skipped_sessions
+
+    @skipped_sessions.setter
+    def skipped_sessions(self, value: set[str]) -> None:
+        self._skipped_sessions = value
 
     def is_vylor_tool(self, name: str) -> bool:
         n = (name or "").lower().strip()

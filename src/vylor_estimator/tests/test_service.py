@@ -10,6 +10,7 @@ from vylor_estimator.discovery import (
     CompositeDiscoverer,
     ISessionDiscoverer,
 )
+from vylor_estimator.impact import SessionImpactAnalyzer
 from vylor_estimator.parser import (
     ClaudeJsonlParser,
     CompositeSessionParser,
@@ -113,6 +114,7 @@ def test_create_estimator_composition_root():
     assert isinstance(service.classifier, PatternTurnClassifier)
     assert isinstance(service.savings_engine, ConservativeSavingsEngine)
     assert isinstance(service.renderer, TerminalReportRenderer)
+    assert isinstance(service.impact_analyzer, SessionImpactAnalyzer)
 
 
 def test_create_estimator_agent_filter():
